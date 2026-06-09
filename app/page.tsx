@@ -2,12 +2,18 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import GoalBar from "@/components/GoalBar";
-import AgentPanel from "@/components/AgentPanel";
+import SideNav, { type NavView } from "@/components/SideNav";
+import TopBar from "@/components/TopBar";
+import AgencyFloor from "@/components/AgencyFloor";
+import DeliverablesBoard from "@/components/DeliverablesBoard";
+import RoomPanel from "@/components/RoomPanel";
 import ProjectsDrawer from "@/components/ProjectsDrawer";
-import { NodeChip, STATUS_COLOR, STATUS_LABEL } from "@/components/OrbitNode";
+import MobileNav from "@/components/MobileNav";
+import LaunchModal, { type LaunchIntake } from "@/components/LaunchModal";
+import DeliverableModal from "@/components/DeliverableModal";
+import { Icon } from "@/components/Icon";
 import { useUiStore } from "@/lib/uiStore";
-import type { AgentStatus, ConfigStatus } from "@/lib/types";
+import type { AreaKey, ConfigStatus } from "@/lib/types";
 
 // El grafo usa canvas + window; cárgalo solo en cliente.
 const OrbitGraph = dynamic(() => import("@/components/OrbitGraph"), { ssr: false });
@@ -22,14 +28,15 @@ export default function Home() {
   const setCampaign = useUiStore((s) => s.setCampaign);
   const applyEvent = useUiStore((s) => s.applyEvent);
   const buildFromSnapshot = useUiStore((s) => s.buildFromSnapshot);
-  const selectNode = useUiStore((s) => s.selectNode);
 
-  const nodeOrder = useUiStore((s) => s.nodeOrder);
-  const nodes = useUiStore((s) => s.nodes);
-  const selectedNodeId = useUiStore((s) => s.selectedNodeId);
   const campaignId = useUiStore((s) => s.campaignId);
+  const nodeCount = useUiStore((s) => s.nodeOrder.length);
 
+  const [view, setView] = useState<NavView>("floor");
   const [showProjects, setShowProjects] = useState(false);
+  const [query, setQuery] = useState("");
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  const [launchGoal, setLaunchGoal] = useState<string | null>(null);
 
   const connectSSE = useCallback(
     (campaignId: string, since: string | null) => {
@@ -89,11 +96,11 @@ export default function Home() {
   }, []);
 
   const onLaunch = useCallback(
-    async (goal: string) => {
+    async (goal: string, opts?: { areas: AreaKey[]; intake: LaunchIntake }) => {
       const res = await fetch("/api/campaign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goal }),
+        body: JSON.stringify({ goal, areas: opts?.areas, intake: opts?.intake }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "Error al lanzar.");
@@ -101,6 +108,7 @@ export default function Home() {
       setCampaign(data.campaignId, goal);
       localStorage.setItem(LS_KEY, data.campaignId);
       connectSSE(data.campaignId, null);
+      setView("floor");
     },
     [reset, setCampaign, connectSSE]
   );
@@ -110,96 +118,93 @@ export default function Home() {
     esRef.current = null;
     localStorage.removeItem(LS_KEY);
     reset();
+    setView("floor");
   }, [reset]);
 
-  const orderedNodes = nodeOrder.map((id) => nodes[id]).filter(Boolean);
-
   return (
-    <main className="flex h-screen flex-col overflow-hidden">
-      <GoalBar onLaunch={onLaunch} onReset={onReset} />
+    <div className="flex h-screen overflow-hidden">
+      <SideNav
+        view={view}
+        onView={setView}
+        onOpenProjects={() => setShowProjects(true)}
+        collapsed={navCollapsed}
+        onToggle={() => setNavCollapsed((v) => !v)}
+      />
 
-      <div className="relative flex flex-1 overflow-hidden">
-        {/* lista lateral de nodos */}
-        <aside className="hidden w-64 shrink-0 flex-col border-r border-white/10 bg-black/20 p-3 md:flex">
-          <button
-            onClick={() => setShowProjects(true)}
-            className="mb-3 flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200 transition hover:bg-white/[0.08]"
-          >
-            📁 Proyectos guardados
-          </button>
-          <div className="mb-2 text-[11px] uppercase tracking-wide text-slate-400">
-            Agentes ({orderedNodes.length})
-          </div>
-          <div className="scroll-thin flex-1 space-y-1.5 overflow-y-auto">
-            {orderedNodes.length === 0 ? (
-              <div className="text-xs text-slate-500">
-                Aún no hay agentes. Lanza un Goal para instanciar la agencia.
-              </div>
-            ) : (
-              orderedNodes.map((n) => (
-                <NodeChip
-                  key={n.id}
-                  node={n}
-                  selected={n.id === selectedNodeId}
-                  onClick={() => selectNode(n.id)}
-                />
-              ))
-            )}
-          </div>
-          <StatusLegend />
-        </aside>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TopBar view={view} query={query} onQuery={setQuery} onNewCampaign={onReset} />
 
-        {/* grafo orbital */}
-        <div className="starfield relative flex-1 overflow-hidden">
-          <OrbitGraph />
+        <main className="relative min-h-0 flex-1">
+          {view === "floor" && (
+            <div className="scroll-thin h-full overflow-y-auto p-3 pb-24 md:p-4 lg:pb-4">
+              <AgencyFloor query={query} onRequestLaunch={setLaunchGoal} onReset={onReset} />
+            </div>
+          )}
 
-          {orderedNodes.length === 0 && (
-            <div className="pointer-events-none absolute inset-0 grid place-items-center">
-              <div className="max-w-md text-center">
-                <div className="text-2xl font-semibold text-slate-200">
-                  Red orbital de agentes
+          {view === "board" && (
+            <div className="scroll-thin h-full overflow-y-auto p-4 pb-24 md:p-6 lg:pb-6">
+              <DeliverablesBoard query={query} />
+            </div>
+          )}
+
+          {view === "network" && (
+            <div className="h-full p-3 pb-24 md:p-4 lg:pb-4">
+              <div className="floor-plate relative h-full overflow-hidden">
+                <div className="absolute left-5 top-4 z-10 flex items-center gap-2.5">
+                  <span className="label-mono">Red de agentes</span>
+                  <span className="hidden text-[12px] text-ink-mute sm:block">
+                    haz click en un nodo para entrar a su sala
+                  </span>
                 </div>
-                <p className="mt-2 text-sm text-slate-400">
-                  Escribe el <span className="text-sky-300">objetivo global</span> en la barra de
-                  arriba y lanza la agencia. El Director descompondrá el goal y delegará a cada área;
-                  haz click en un nodo para entrar y ver/iterar a su agente.
-                </p>
+                <OrbitGraph />
+                {nodeCount === 0 && (
+                  <div className="pointer-events-none absolute inset-0 grid place-items-center">
+                    <div className="max-w-sm text-center">
+                      <span className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-white text-ink-mute shadow-soft">
+                        <Icon name="network" size={26} />
+                      </span>
+                      <div className="font-display text-[18px] font-bold text-ink">Topología vacía</div>
+                      <p className="mt-1 text-[13px] text-ink-soft">
+                        Lanza un briefing desde la planta y los agentes aparecerán aquí,
+                        orquestados por el Director.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
-        </div>
-
-        {/* panel de drill-in */}
-        <AgentPanel />
-
-        {/* historial de proyectos */}
-        <ProjectsDrawer
-          open={showProjects}
-          onClose={() => setShowProjects(false)}
-          onOpen={openCampaign}
-          currentId={campaignId}
-        />
+        </main>
       </div>
-    </main>
-  );
-}
 
-function StatusLegend() {
-  const items: AgentStatus[] = ["thinking", "tool", "waiting", "done", "idle", "error"];
-  return (
-    <div className="mt-3 border-t border-white/10 pt-3">
-      <div className="mb-1.5 text-[10px] uppercase tracking-wide text-slate-500">Estados</div>
-      <div className="grid grid-cols-2 gap-1">
-        {items.map((s) => (
-          <div key={s} className="flex items-center gap-1.5 text-[11px] text-slate-400">
-            <span
-              className="h-2 w-2 rounded-full"
-              style={{ backgroundColor: STATUS_COLOR[s], boxShadow: `0 0 6px ${STATUS_COLOR[s]}` }}
-            />
-            {STATUS_LABEL[s]}
-          </div>
-        ))}
-      </div>
+      {/* navegación móvil */}
+      <MobileNav view={view} onView={setView} onOpenProjects={() => setShowProjects(true)} />
+
+      {/* drill-in de sala */}
+      <RoomPanel />
+
+      {/* lector de entregables (informe .md) */}
+      <DeliverableModal />
+
+      {/* pop-up de lanzamiento: áreas + intake */}
+      <LaunchModal
+        open={launchGoal !== null}
+        goal={launchGoal ?? ""}
+        onCancel={() => setLaunchGoal(null)}
+        onConfirm={async (opts) => {
+          if (launchGoal === null) return;
+          await onLaunch(launchGoal, opts);
+          setLaunchGoal(null);
+        }}
+      />
+
+      {/* historial de proyectos */}
+      <ProjectsDrawer
+        open={showProjects}
+        onClose={() => setShowProjects(false)}
+        onOpen={openCampaign}
+        currentId={campaignId}
+      />
     </div>
   );
 }

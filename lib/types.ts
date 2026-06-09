@@ -46,7 +46,8 @@ export type MessageContent =
   | { type: "text"; text: string }
   | { type: "tool_call"; tool: string; input: unknown }
   | { type: "tool_result"; tool: string; summary: string }
-  | { type: "user_instruction"; text: string };
+  | { type: "user_instruction"; text: string }
+  | { type: "user_request"; question: string; options?: string[] };
 
 export interface DeliverableRecord {
   id: string;

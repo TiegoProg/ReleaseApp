@@ -1,5 +1,7 @@
 import type { ToolDef } from "./context";
 import { AREAS, AREA_KEYS, type AreaKey } from "../types";
+import { getEnabledAreas } from "../agents/runtimeConfig";
+import { addMessage } from "../store";
 
 // delegate_to_area — solo del Director. Activa un agente de área y corre su loop completo.
 export const delegateToArea: ToolDef = {
@@ -33,6 +35,12 @@ export const delegateToArea: ToolDef = {
     if (!AREA_KEYS.includes(area)) {
       return `Área inválida: ${input.area}. Usa una de: ${AREA_KEYS.join(", ")}.`;
     }
+    const enabled = getEnabledAreas(ctx.campaignId);
+    if (enabled && !enabled.includes(area)) {
+      return `El usuario NO activó el área "${AREAS[area].short}" para esta campaña. No la ejecutes; continúa solo con las áreas activas (${enabled
+        .map((a) => AREAS[a].short)
+        .join(", ")}).`;
+    }
     const summary = await ctx.runChild({
       kind: "area",
       area,
@@ -65,8 +73,15 @@ export const requestUserInput: ToolDef = {
     },
   },
   handler: async (input, ctx) => {
-    ctx.emit("user_input_request", {
-      payload: { question: input.question, options: input.options ?? [] },
+    const question = String(input.question ?? "");
+    const options = Array.isArray(input.options) ? input.options : [];
+    ctx.emit("user_input_request", { payload: { question, options } });
+    // Persiste la pregunta para que sobreviva a recargas/rehidratación del snapshot.
+    await addMessage({
+      agentId: ctx.agentId,
+      campaignId: ctx.campaignId,
+      role: "assistant",
+      content: { type: "user_request", question, options },
     });
     return "La solicitud se mostró al usuario en la UI. No bloquees el avance: continúa con un supuesto razonable y deja esto marcado como pendiente de aprobación del usuario.";
   },

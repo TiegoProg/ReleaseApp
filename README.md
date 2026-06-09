@@ -62,7 +62,17 @@ API: `GET /api/campaigns`. Inspección CLI: `node scripts/list-campaigns.mjs`.
 - `lib/tools/*` — tools (registry, board, content, media, image, video, search, subagent).
 - `lib/store.ts` — persistencia (Supabase o memoria). `lib/agents/events.ts` — bus de eventos + SSE.
 - `app/api/*` — `campaign` (POST lanzar, GET `?id=` rehidratar), `agent/run` (SSE en vivo), `agent/message` (iterar), `health`.
-- `components/*` — `OrbitGraph` (canvas), `AgentPanel`, `ActivityStream`, `GoalBar`, `OrbitNode`.
+- `components/*` — UI **Agency Floor** (minimal-tech, claro):
+  - `SideNav` / `MobileNav` / `TopBar` — shell de navegación (Planta · Entregables · Red · Proyectos).
+  - `Briefing` — lanzador del objetivo (Goal) y resumen de la campaña activa.
+  - `AgencyFloor` + `ModuleCard` — la planta: cada área es una sala clickeable alrededor de la
+    recepción del **Director**, con estado en vivo y corredores de delegación.
+  - `RoomPanel` — drill-in de sala: agentes (área + subagentes) con su actividad, entregables y chat.
+  - `DeliverablesBoard` — board de entregables agrupados por sala.
+  - `OrbitGraph` (canvas) + `OrbitNode` — vista "Red de agentes" (topología orbital).
+  - `ActivityStream` — render del feed por agente. `Icon` — set de iconos lineales propio.
+  - Diseño: `app/globals.css` (tokens) + `tailwind.config.ts`; fuentes Bricolage Grotesque /
+    Hanken Grotesk / JetBrains Mono (cargadas en `app/layout.tsx`).
 
 ## Límites de la v1
 - Profundidad de subagentes = 2; tope de rondas y timeout por agente (evita loops caros).

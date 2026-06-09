@@ -13,7 +13,12 @@ import {
   directorSystem,
   subagentSystem,
 } from "./definitions";
-import { AREAS, AREA_KEYS, type AgentRecord } from "../types";
+import { AREAS, AREA_KEYS, type AgentRecord, type AreaKey } from "../types";
+import {
+  getCampaignConfig,
+  setCampaignConfig,
+  type CampaignIntake,
+} from "./runtimeConfig";
 
 // Mantiene vivas las corridas en background y evita doble arranque / GC.
 const g = globalThis as unknown as {
@@ -39,9 +44,25 @@ function nodePayload(a: AgentRecord) {
  * Crea la campaña, instancia el Director + las 4 áreas (idle) y arranca al Director
  * en background. Devuelve el campaignId de inmediato; la UI se conecta por SSE.
  */
-export async function startCampaign(goal: string): Promise<{ campaignId: string; directorId: string }> {
+export interface StartCampaignOpts {
+  areas?: AreaKey[];
+  intake?: CampaignIntake;
+}
+
+export async function startCampaign(
+  goal: string,
+  opts?: StartCampaignOpts
+): Promise<{ campaignId: string; directorId: string }> {
   const campaign = await createCampaign(goal);
-  publish(makeEvent("campaign_created", { campaignId: campaign.id, payload: { goal } }));
+
+  // Áreas habilitadas por el usuario en el pop-up de lanzamiento (default: todas).
+  const areas =
+    opts?.areas && opts.areas.length
+      ? AREA_KEYS.filter((a) => opts.areas!.includes(a))
+      : AREA_KEYS.slice();
+  setCampaignConfig(campaign.id, { areas, intake: opts?.intake });
+
+  publish(makeEvent("campaign_created", { campaignId: campaign.id, payload: { goal, areas } }));
 
   const director = await createAgent({
     campaignId: campaign.id,
@@ -59,8 +80,8 @@ export async function startCampaign(goal: string): Promise<{ campaignId: string;
     })
   );
 
-  // Crea los 4 nodos de área de entrada (idle) para que la órbita los muestre desde el inicio.
-  for (const area of AREA_KEYS) {
+  // Crea solo los nodos de las áreas activadas (idle) para mostrarlas desde el inicio.
+  for (const area of areas) {
     const node = await createAgent({
       campaignId: campaign.id,
       kind: "area",
@@ -87,7 +108,7 @@ export async function startCampaign(goal: string): Promise<{ campaignId: string;
         kind: "director",
         area: null,
         depth: 0,
-        system: directorSystem(goal),
+        system: directorSystem(goal, { areas, intake: opts?.intake }),
         userText: directorKickoff(goal),
         parentSignal: controller.signal,
       });
@@ -127,9 +148,10 @@ export async function sendUserMessage(
   if (!campaign) return { ok: false, error: "Campaña no encontrada." };
 
   const depth = agent.kind === "director" ? 0 : agent.kind === "area" ? 1 : 2;
+  const cfg = getCampaignConfig(campaignId);
   const system =
     agent.kind === "director"
-      ? directorSystem(campaign.goal)
+      ? directorSystem(campaign.goal, { areas: cfg?.areas, intake: cfg?.intake })
       : agent.kind === "area"
       ? areaSystem(agent.area!)
       : subagentSystem(agent.area!, agent.role);

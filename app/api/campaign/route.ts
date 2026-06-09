@@ -7,7 +7,21 @@ import { getSnapshot } from "@/lib/store";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const Body = z.object({ goal: z.string().min(3) });
+const AreaEnum = z.enum(["research", "creative", "content", "media"]);
+const Body = z.object({
+  goal: z.string().min(3),
+  areas: z.array(AreaEnum).min(1).optional(),
+  intake: z
+    .object({
+      product: z.string().optional(),
+      audience: z.string().optional(),
+      budget: z.string().optional(),
+      channels: z.string().optional(),
+      productImageUrl: z.string().optional(),
+      notes: z.string().optional(),
+    })
+    .optional(),
+});
 
 // GET /api/campaign?id=...  -> snapshot para rehidratar la UI.
 export async function GET(req: NextRequest) {
@@ -46,6 +60,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Body inválido. Se requiere { goal }." }, { status: 400 });
   }
 
-  const { campaignId, directorId } = await startCampaign(parsed.goal);
+  const { campaignId, directorId } = await startCampaign(parsed.goal, {
+    areas: parsed.areas,
+    intake: parsed.intake,
+  });
   return NextResponse.json({ campaignId, directorId });
 }

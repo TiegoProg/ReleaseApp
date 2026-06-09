@@ -125,7 +125,14 @@ export default function OrbitGraph() {
           hit = n.id;
         }
       });
-      if (hit) useUiStore.getState().selectNode(hit);
+      if (hit) {
+        const st = useUiStore.getState();
+        const nd = st.nodes[hit];
+        if (nd) {
+          st.selectNode(hit);
+          st.selectRoom(nd.kind === "director" ? "director" : nd.area ?? "research");
+        }
+      }
     };
     canvas.addEventListener("click", onClick);
 
@@ -208,7 +215,7 @@ export default function OrbitGraph() {
 
     // anillos de órbita
     ctx.save();
-    ctx.strokeStyle = "rgba(148,163,184,0.10)";
+    ctx.strokeStyle = "rgba(11,16,32,0.08)";
     ctx.lineWidth = 1;
     for (const rr of [base * 0.28, base * 0.42]) {
       ctx.beginPath();
@@ -243,7 +250,7 @@ export default function OrbitGraph() {
         ctx.fillStyle = "rgba(125,211,252,0.95)";
         ctx.fill();
       } else {
-        ctx.strokeStyle = "rgba(148,163,184,0.12)";
+        ctx.strokeStyle = "rgba(11,16,32,0.10)";
         ctx.lineWidth = 1;
         ctx.stroke();
       }
@@ -275,17 +282,17 @@ export default function OrbitGraph() {
 
       // anillo por área/tipo
       ctx.lineWidth = n.id === selectedNodeId ? 3.5 : 2;
-      ctx.strokeStyle = n.id === selectedNodeId ? "#e2e8f0" : ring;
+      ctx.strokeStyle = n.id === selectedNodeId ? "#0b1020" : ring;
       ctx.stroke();
 
       // label
       const label =
         nd.kind === "director" ? "Director" : nd.area ? AREAS[nd.area].short : nd.role;
       const text = nd.kind === "subagent" ? truncate(nd.role, 14) : label;
-      ctx.font = `${nd.kind === "director" ? 13 : 11}px ui-sans-serif, system-ui`;
+      ctx.font = `${nd.kind === "director" ? 600 : 500} ${nd.kind === "director" ? 13 : 11}px ui-sans-serif, system-ui`;
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
-      ctx.fillStyle = "rgba(226,232,240,0.9)";
+      ctx.fillStyle = "rgba(11,16,32,0.72)";
       ctx.fillText(text, n.x, n.y + n.r + 5);
     });
   }

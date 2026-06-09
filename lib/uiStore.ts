@@ -9,6 +9,7 @@ import type {
   ConfigStatus,
   NodeKind,
 } from "./types";
+import type { RoomKey } from "./areaMeta";
 
 export interface NodeData {
   id: string;
@@ -46,12 +47,16 @@ interface UiState {
   deliverables: DeliverableLite[];
   linkPulses: Record<string, number>; // "from->to" -> expiry ms
   selectedNodeId: string | null;
+  selectedRoom: RoomKey | null; // sala (área o dirección) abierta en el panel
+  openDeliverable: DeliverableLite | null; // entregable abierto en el lector
   seen: Set<string>;
 
   setConfig: (c: ConfigStatus) => void;
   reset: () => void;
   setCampaign: (id: string, goal: string) => void;
   selectNode: (id: string | null) => void;
+  selectRoom: (room: RoomKey | null) => void;
+  setOpenDeliverable: (d: DeliverableLite | null) => void;
   applyEvent: (ev: AgentEvent) => void;
   buildFromSnapshot: (snap: CampaignSnapshot) => void;
 }
@@ -107,6 +112,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   deliverables: [],
   linkPulses: {},
   selectedNodeId: null,
+  selectedRoom: null,
+  openDeliverable: null,
   seen: new Set<string>(),
 
   setConfig: (c) => set({ config: c }),
@@ -122,6 +129,8 @@ export const useUiStore = create<UiState>((set, get) => ({
       deliverables: [],
       linkPulses: {},
       selectedNodeId: null,
+      selectedRoom: null,
+      openDeliverable: null,
       seen: new Set<string>(),
     }),
 
@@ -129,6 +138,10 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({ campaignId: id, goal, status: "running" }),
 
   selectNode: (id) => set({ selectedNodeId: id }),
+
+  selectRoom: (room) => set({ selectedRoom: room }),
+
+  setOpenDeliverable: (d) => set({ openDeliverable: d }),
 
   applyEvent: (ev) => {
     const state = { ...get() } as UiState;
@@ -233,6 +246,8 @@ export const useUiStore = create<UiState>((set, get) => ({
       else if (c.type === "user_instruction") arr.push({ kind: "text", role: "user", text: c.text });
       else if (c.type === "tool_call") arr.push({ kind: "tool_call", tool: c.tool, input: c.input });
       else if (c.type === "tool_result") arr.push({ kind: "tool_result", tool: c.tool, summary: c.summary });
+      else if (c.type === "user_request")
+        arr.push({ kind: "request", question: c.question, options: c.options ?? [] });
     }
 
     const deliverables: DeliverableLite[] = snap.deliverables.map((d) => ({
@@ -253,7 +268,132 @@ export const useUiStore = create<UiState>((set, get) => ({
       deliverables,
       linkPulses: {},
       selectedNodeId: null,
+      selectedRoom: null,
+      openDeliverable: null,
       seen: new Set<string>(),
     });
   },
 }));
+
+// ---- Selectores derivados para la planta de la agencia ----
+
+export interface RoomStats {
+  agents: number;
+  deliverables: number;
+  status: AgentStatus; // estado representativo de la sala
+  active: boolean; // hay un agente pensando/ejecutando
+}
+
+const STATUS_PRIORITY: AgentStatus[] = [
+  "error",
+  "waiting",
+  "tool",
+  "thinking",
+  "done",
+  "idle",
+];
+
+/** Resume el estado de una sala (área o dirección) a partir de sus agentes. */
+export function roomStats(state: UiState, room: RoomKey): RoomStats {
+  const nodes = Object.values(state.nodes).filter((n) =>
+    room === "director" ? n.kind === "director" : n.area === room
+  );
+  const dels = state.deliverables.filter((d) =>
+    room === "director" ? d.area === "director" : d.area === room
+  );
+
+  let status: AgentStatus = "idle";
+  if (nodes.length > 0) {
+    for (const s of STATUS_PRIORITY) {
+      if (nodes.some((n) => n.status === s)) {
+        status = s;
+        break;
+      }
+    }
+  }
+
+  return {
+    agents: nodes.length,
+    deliverables: dels.length,
+    status,
+    active: nodes.some((n) => n.status === "thinking" || n.status === "tool"),
+  };
+}
+
+export interface RoomSignal {
+  needsInput: boolean; // un agente espera tu decisión
+  question?: string; // la pregunta pendiente
+  options?: string[]; // opciones sugeridas
+  lastText?: string; // lo último que dijo (qué está haciendo)
+  agentId?: string; // agente relevante (para entrar / responder)
+}
+
+/** ¿El agente tiene una pregunta sin responder? (request_user_input es no bloqueante,
+ *  así que detectamos un 'request' que no haya sido seguido por una respuesta del usuario). */
+export function pendingRequest(
+  entries: Entry[] | undefined
+): { question: string; options: string[] } | null {
+  if (!entries) return null;
+  let idx = -1;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].kind === "request") {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return null;
+  const answered = entries
+    .slice(idx + 1)
+    .some((e) => e.kind === "text" && e.role === "user");
+  if (answered) return null;
+  const e = entries[idx];
+  return e.kind === "request" ? { question: e.question, options: e.options ?? [] } : null;
+}
+
+/** Qué comunica una sala hacia la vista general: actividad y/o petición de ayuda. */
+export function roomSignal(state: UiState, room: RoomKey): RoomSignal {
+  const agents = Object.values(state.nodes).filter((n) =>
+    room === "director" ? n.kind === "director" : n.area === room
+  );
+
+  const waiting = agents.find((n) => n.status === "waiting");
+  let question: string | undefined;
+  let options: string[] | undefined;
+  let needAgent: string | undefined;
+
+  // Prioriza el agente en estado waiting; luego cualquier agente con pregunta pendiente.
+  const order = waiting ? [waiting, ...agents.filter((a) => a.id !== waiting.id)] : agents;
+  for (const a of order) {
+    const pr = pendingRequest(state.transcripts[a.id]);
+    if (pr) {
+      question = pr.question;
+      options = pr.options;
+      needAgent = a.id;
+      break;
+    }
+  }
+
+  const primary = agents.find((n) => n.kind === "area" || n.kind === "director") ?? agents[0];
+  let lastText: string | undefined;
+  // Texto más reciente entre los agentes de la sala (prioriza primario, luego subagentes).
+  const ordered = primary ? [primary, ...agents.filter((a) => a.id !== primary.id)] : agents;
+  for (const a of ordered) {
+    const tr = state.transcripts[a.id] ?? [];
+    for (let i = tr.length - 1; i >= 0; i--) {
+      const e = tr[i];
+      if (e.kind === "text" && e.role === "assistant" && e.text.trim()) {
+        lastText = e.text.trim();
+        break;
+      }
+    }
+    if (lastText) break;
+  }
+
+  return {
+    needsInput: !!question || !!waiting,
+    question,
+    options,
+    lastText,
+    agentId: needAgent ?? primary?.id,
+  };
+}

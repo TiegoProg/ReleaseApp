@@ -17,7 +17,13 @@ export const writeBrief: ToolDef = {
           description: "Lista de ángulos / hipótesis creativas de la campaña.",
         },
         budget: { type: "string", description: "Presupuesto sugerido y su distribución por fase." },
-        summary: { type: "string", description: "Resumen del plan estratégico." },
+        ad_references: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Referencias de anuncios ganadores del nicho: patrones accionables observados (hook, formato, uso de texto en imagen, oferta). 3-5 ítems.",
+        },
+        summary: { type: "string", description: "Resumen del plan estratégico, en lenguaje claro y marketero." },
       },
       required: ["title", "audience", "angles", "summary"],
     },
