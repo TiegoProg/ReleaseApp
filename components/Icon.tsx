@@ -32,7 +32,12 @@ export type GlyphName =
   | "rocket"
   | "check"
   | "image"
-  | "chevron";
+  | "chevron"
+  | "studio"
+  | "video"
+  | "user"
+  | "mic"
+  | "refresh";
 
 const PATHS: Record<GlyphName, JSX.Element> = {
   research: (
@@ -183,6 +188,37 @@ const PATHS: Record<GlyphName, JSX.Element> = {
   chevron: (
     <>
       <path d="M9 6l6 6-6 6" />
+    </>
+  ),
+  studio: (
+    <>
+      <rect x="3.5" y="6" width="17" height="13" rx="2.2" />
+      <path d="M3.5 6l3.2 3M9 6l3.2 3M14.5 6l3.2 3" opacity="0.6" />
+      <path d="M10.5 12.2v3.6l3-1.8z" />
+    </>
+  ),
+  video: (
+    <>
+      <rect x="3.5" y="6.5" width="11.5" height="11" rx="2.2" />
+      <path d="M15 10.5l5.5-3v9l-5.5-3z" />
+    </>
+  ),
+  user: (
+    <>
+      <circle cx="12" cy="8.5" r="3.6" />
+      <path d="M5.5 19.5a6.5 6.5 0 0113 0" />
+    </>
+  ),
+  mic: (
+    <>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M6 11a6 6 0 0012 0M12 17v3.5M9 20.5h6" opacity="0.8" />
+    </>
+  ),
+  refresh: (
+    <>
+      <path d="M20 11a8 8 0 10-1.5 5.5" />
+      <path d="M20 5.5V11h-5.5" />
     </>
   ),
 };

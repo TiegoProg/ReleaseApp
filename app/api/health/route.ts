@@ -12,6 +12,8 @@ export async function GET() {
     hasSupabase: hasSupabase(),
     hasOpenAI: !!process.env.OPENAI_API_KEY,
     hasKling: !!process.env.KLING_API_KEY,
+    hasFal: !!process.env.FAL_KEY,
+    hasGemini: !!process.env.GEMINI_API_KEY,
   };
   return NextResponse.json(status);
 }

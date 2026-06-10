@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import SideNav, { type NavView } from "@/components/SideNav";
 import TopBar from "@/components/TopBar";
 import AgencyFloor from "@/components/AgencyFloor";
+import Studio from "@/components/Studio";
 import DeliverablesBoard from "@/components/DeliverablesBoard";
 import RoomPanel from "@/components/RoomPanel";
 import ProjectsDrawer from "@/components/ProjectsDrawer";
@@ -138,6 +139,12 @@ export default function Home() {
           {view === "floor" && (
             <div className="scroll-thin h-full overflow-y-auto p-3 pb-24 md:p-4 lg:pb-4">
               <AgencyFloor query={query} onRequestLaunch={setLaunchGoal} onReset={onReset} />
+            </div>
+          )}
+
+          {view === "studio" && (
+            <div className="scroll-thin h-full overflow-y-auto p-3 pb-24 md:p-4 lg:pb-4">
+              <Studio />
             </div>
           )}
 

@@ -105,4 +105,6 @@ export interface ConfigStatus {
   hasSupabase: boolean;
   hasOpenAI: boolean;
   hasKling: boolean;
+  hasFal: boolean; // Seedance (video) vía fal
+  hasGemini: boolean; // voz (Gemini TTS)
 }

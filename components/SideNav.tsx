@@ -4,10 +4,11 @@ import { Icon, type GlyphName } from "./Icon";
 import { useUiStore } from "@/lib/uiStore";
 import { BRAND, BRAND_TAGLINE } from "@/lib/areaMeta";
 
-export type NavView = "floor" | "board" | "network";
+export type NavView = "floor" | "studio" | "board" | "network";
 
 const ITEMS: { key: NavView; label: string; icon: GlyphName }[] = [
   { key: "floor", label: "Planta", icon: "home" },
+  { key: "studio", label: "UGC Studio", icon: "studio" },
   { key: "board", label: "Entregables", icon: "board" },
   { key: "network", label: "Red de agentes", icon: "network" },
 ];
@@ -134,7 +135,8 @@ export default function SideNav({
             <SysRow label="Claude" ok={!!config?.hasAnthropic} off="falta key" />
             <SysRow label="Memoria" ok={!!config?.hasSupabase} off="efímera" />
             <SysRow label="Imagen" ok={!!config?.hasOpenAI} off="stub" />
-            <SysRow label="Video" ok={!!config?.hasKling} off="stub" />
+            <SysRow label="Voz" ok={!!config?.hasGemini} off="stub" />
+            <SysRow label="Video" ok={!!config?.hasFal} off="stub" />
           </div>
           <div className="mt-3 flex items-center justify-between border-t border-line pt-2.5 text-[11px] text-ink-mute">
             <span>{campaignId ? `${nodeCount} agentes` : "sin campaña"}</span>
