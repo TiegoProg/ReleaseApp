@@ -12,11 +12,13 @@ const Body = z.object({
   sourceImageUrl: z.string().url().optional().or(z.literal("")),
   productImageUrl: z.string().url().optional().or(z.literal("")),
   product: z.string().optional(),
+  voiceName: z.string().optional(), // ancla de voz (Gemini TTS) — p.ej. masculina
+  language: z.string().optional(), // idioma de la voz — p.ej. "en-US"
 });
 
 // GET /api/avatar -> lista de personas del roster
 export async function GET() {
-  return NextResponse.json({ personas: listPersonas() });
+  return NextResponse.json({ personas: await listPersonas() });
 }
 
 // POST /api/avatar -> genera avatar héroe + character sheet y crea la persona
@@ -37,7 +39,7 @@ export async function POST(req: NextRequest) {
       product: parsed.product || undefined,
     });
 
-    const persona = createPersona({
+    const persona = await createPersona({
       name: parsed.name,
       avatarUrl: assets.avatarUrl,
       sheetUrl: assets.sheetUrl,
@@ -45,6 +47,8 @@ export async function POST(req: NextRequest) {
       identity: assets.identity,
       product: parsed.product || undefined,
       mode: assets.mode,
+      voiceName: parsed.voiceName || undefined,
+      language: parsed.language || undefined,
     });
 
     return NextResponse.json({ persona });

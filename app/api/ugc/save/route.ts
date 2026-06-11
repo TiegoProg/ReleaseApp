@@ -10,6 +10,8 @@ const Body = z.object({
   videoUrl: z.string().url(),
   script: z.string().default(""),
   preset: z.string().optional(),
+  cost: z.number().optional(), // USD estimado del render
+  model: z.string().optional(), // tier usado (fal-pro / fal-fast)
 });
 
 // POST /api/ugc/save -> adjunta el clip generado a la persona (galería persistente)
@@ -21,10 +23,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Body inválido." }, { status: 400 });
   }
 
-  const persona = addPersonaVideo(parsed.personaId, {
+  const persona = await addPersonaVideo(parsed.personaId, {
     url: parsed.videoUrl,
     script: parsed.script,
     preset: parsed.preset,
+    cost: parsed.cost,
+    model: parsed.model,
     createdAt: new Date().toISOString(),
   });
   if (!persona) return NextResponse.json({ error: "Persona no encontrada." }, { status: 404 });

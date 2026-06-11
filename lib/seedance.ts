@@ -17,12 +17,24 @@ export interface VideoJob {
   requestId?: string;
   mode: string;
   error?: string;
+  costUsd?: number; // costo estimado del render (USD)
+}
+
+// Costo estimado por render (USD). NO son precios oficiales de fal — son tarifas
+// configurables por env para mostrar un costo aproximado por video en la UI.
+function estimateCostUsd(tier: string, resolution: string, durationSec: number): number {
+  if (tier === "stub") return 0;
+  const perSecPro = Number(process.env.SEEDANCE_COST_PRO_PER_SEC || 0.15);
+  const perSecFast = Number(process.env.SEEDANCE_COST_FAST_PER_SEC || 0.09);
+  const base = tier === "fal-pro" ? perSecPro : perSecFast;
+  const resMult = resolution.includes("1080") ? 1.5 : 1;
+  return Math.round(base * durationSec * resMult * 100) / 100;
 }
 
 const FAL_QUEUE = "https://queue.fal.run";
 
 function model(): string {
-  return process.env.SEEDANCE_MODEL || "bytedance/seedance-2.0/fast/reference-to-video";
+  return process.env.SEEDANCE_MODEL || "bytedance/seedance-2.0/pro/reference-to-video";
 }
 
 // fal devuelve status_url / response_url al encolar; las guardamos por requestId
@@ -73,33 +85,49 @@ async function storeVideo(remoteUrl: string): Promise<string | null> {
 /**
  * Lanza la generación de video en fal (cola async) y devuelve el request_id.
  * No bloquea: el estado real se consulta con pollVideo().
+ *
+ * Multi-referencia (Seedance 2.0): el prompt referencia los materiales por su
+ * posición — image_urls[0] = @Image1, image_urls[1] = @Image2, video_urls[0] =
+ * @Video1, audio_urls[0] = @Audio1, etc. El caller arma esos arrays en el MISMO
+ * orden en que numeró los tags del prompt.
  */
 export async function startVideo(input: {
-  imageUrl: string;
-  audioUrl?: string;
+  imageUrls: string[];
+  videoUrls?: string[];
+  audioUrls?: string[];
   prompt: string;
+  model?: string; // override puntual del modelo (p.ej. forzar pro sin tocar el env)
 }): Promise<VideoJob> {
   const key = process.env.FAL_KEY;
   if (!key) {
-    return { status: "stub", videoUrl: placeholderVideo(), mode: "stub" };
+    return { status: "stub", videoUrl: placeholderVideo(), mode: "stub", costUsd: 0 };
   }
 
+  const selectedModel = input.model || model();
+  const tier = selectedModel.includes("/pro/") ? "fal-pro" : selectedModel.includes("/fast/") ? "fal-fast" : "fal";
   const resolution = process.env.SEEDANCE_RESOLUTION || "720p";
   const duration = process.env.SEEDANCE_DURATION || "8";
+  const costUsd = estimateCostUsd(tier, resolution, Number(duration) || 8);
+
+  const images = (input.imageUrls ?? []).filter(Boolean);
+  const videos = (input.videoUrls ?? []).filter(Boolean);
+  const audios = (input.audioUrls ?? []).filter(Boolean);
 
   const body: Record<string, any> = {
     prompt: input.prompt,
-    image_urls: [input.imageUrl],
+    image_urls: images,
     resolution,
     duration,
     aspect_ratio: "9:16",
     generate_audio: true, // el output DEBE traer pista de audio o sale mudo
   };
-  // Voz pineada de Gemini como referencia de lip-sync (@Audio1 en el prompt).
-  if (input.audioUrl) body.audio_urls = [input.audioUrl];
+  // Materiales de referencia adicionales (Seedance 2.0).
+  if (videos.length) body.video_urls = videos;
+  // Voz pineada de Gemini + audios de referencia (@Audio1.. en el prompt).
+  if (audios.length) body.audio_urls = audios;
 
   try {
-    const res = await fetch(`${FAL_QUEUE}/${model()}`, {
+    const res = await fetch(`${FAL_QUEUE}/${selectedModel}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Key ${key}` },
       body: JSON.stringify(body),
@@ -108,20 +136,21 @@ export async function startVideo(input: {
     if (!res.ok) {
       return {
         status: "failed",
-        mode: "fal",
+        mode: tier,
         error: `fal ${res.status}: ${(await res.text()).slice(0, 200)}`,
+        costUsd,
       };
     }
     const data = await safeJson(res);
     const requestId = data?.request_id ?? data?.requestId;
-    if (!requestId) return { status: "failed", mode: "fal", error: "fal no devolvió request_id." };
+    if (!requestId) return { status: "failed", mode: tier, error: "fal no devolvió request_id.", costUsd };
     // Guarda las URLs canónicas que fal entrega (más fiable que reconstruirlas).
-    const statusUrl = data?.status_url ?? `${FAL_QUEUE}/${model()}/requests/${requestId}/status`;
-    const responseUrl = data?.response_url ?? `${FAL_QUEUE}/${model()}/requests/${requestId}`;
+    const statusUrl = data?.status_url ?? `${FAL_QUEUE}/${selectedModel}/requests/${requestId}/status`;
+    const responseUrl = data?.response_url ?? `${FAL_QUEUE}/${selectedModel}/requests/${requestId}`;
     falJobs.set(requestId, { statusUrl, responseUrl });
-    return { status: "rendering", requestId, mode: "fal" };
+    return { status: "rendering", requestId, mode: tier, costUsd };
   } catch (e: any) {
-    return { status: "failed", mode: "fal", error: e?.message ?? String(e) };
+    return { status: "failed", mode: tier, error: e?.message ?? String(e), costUsd };
   }
 }
 

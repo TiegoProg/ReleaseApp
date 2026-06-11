@@ -1,16 +1,23 @@
 import { randomUUID } from "crypto";
+import { getServerSupabase } from "./supabase";
 
 // ============================================================================
-// Roster de personas (avatares reutilizables) — modelo HÍBRIDO:
-// se generan por concepto, pero se pueden guardar y reutilizar entre campañas.
-// Cada persona guarda sus ANCLAS de coherencia: avatar héroe, sheet, voz fija y
-// seed de movimiento. Vive en memoria (sobrevive HMR vía globalThis).
+// Roster de personas (avatares reutilizables) — PERSISTENTE en Supabase Storage.
+// Se guarda un índice JSON (personas/index.json) en el bucket existente; así los
+// avatares sobreviven reinicios del server y cambios de modelo. La Map en memoria
+// (globalThis) actúa como caché; se hidrata 1 vez por proceso desde Storage.
+// Si no hay Supabase, cae a memoria pura (no persiste, pero la UI sigue viva).
 // ============================================================================
+
+const BUCKET = "orbita-images";
+const INDEX_PATH = "personas/index.json";
 
 export interface PersonaVideo {
   url: string;
   script: string;
   preset?: string;
+  cost?: number; // USD estimado del render
+  model?: string; // tier usado (fal-pro / fal-fast / stub)
   createdAt: string;
 }
 
@@ -33,11 +40,56 @@ export interface Persona {
 // Voces de Gemini TTS rotadas por defecto (determinista por persona).
 const VOICES = ["Kore", "Puck", "Charon", "Aoede", "Leda", "Zephyr", "Enceladus", "Sulafat"];
 
-const g = globalThis as unknown as { __orbitaPersonas?: Map<string, Persona> };
+const g = globalThis as unknown as {
+  __orbitaPersonas?: Map<string, Persona>;
+  __orbitaPersonasLoad?: Promise<void>;
+};
 if (!g.__orbitaPersonas) g.__orbitaPersonas = new Map();
 const store = g.__orbitaPersonas;
 
-export function createPersona(input: {
+// Vuelca el roster completo al índice JSON de Storage (upsert).
+async function persist(): Promise<void> {
+  const sb = getServerSupabase();
+  if (!sb) return;
+  try {
+    const list = Array.from(store.values());
+    const buf = Buffer.from(JSON.stringify(list), "utf8");
+    await sb.storage
+      .from(BUCKET)
+      .upload(INDEX_PATH, buf, { contentType: "application/json", upsert: true });
+  } catch {
+    /* si Storage falla, el roster sigue en memoria */
+  }
+}
+
+// Hidrata la caché desde Storage una sola vez por proceso. Si en memoria había
+// personas que aún no estaban en Storage (p.ej. recién creadas antes de migrar),
+// las persiste para que sobrevivan un reinicio real.
+function ensureLoaded(): Promise<void> {
+  if (g.__orbitaPersonasLoad) return g.__orbitaPersonasLoad;
+  g.__orbitaPersonasLoad = (async () => {
+    const sb = getServerSupabase();
+    if (!sb) return;
+    const loadedIds = new Set<string>();
+    try {
+      const { data, error } = await sb.storage.from(BUCKET).download(INDEX_PATH);
+      if (!error && data) {
+        const list: Persona[] = JSON.parse(await data.text());
+        for (const p of list) {
+          loadedIds.add(p.id);
+          if (!store.has(p.id)) store.set(p.id, p);
+        }
+      }
+    } catch {
+      /* índice inexistente en el primer arranque → roster vacío */
+    }
+    const hasUnsaved = Array.from(store.keys()).some((id) => !loadedIds.has(id));
+    if (hasUnsaved) await persist();
+  })();
+  return g.__orbitaPersonasLoad;
+}
+
+export async function createPersona(input: {
   name?: string;
   avatarUrl: string;
   sheetUrl: string;
@@ -47,7 +99,8 @@ export function createPersona(input: {
   mode: string;
   voiceName?: string;
   language?: string;
-}): Persona {
+}): Promise<Persona> {
+  await ensureLoaded();
   const id = randomUUID();
   const persona: Persona = {
     id,
@@ -65,23 +118,31 @@ export function createPersona(input: {
     createdAt: new Date().toISOString(),
   };
   store.set(id, persona);
+  await persist();
   return persona;
 }
 
 // Adjunta un clip generado a la persona (galería persistente).
-export function addPersonaVideo(id: string, video: PersonaVideo): Persona | undefined {
+export async function addPersonaVideo(
+  id: string,
+  video: PersonaVideo
+): Promise<Persona | undefined> {
+  await ensureLoaded();
   const p = store.get(id);
   if (!p) return undefined;
   p.videos = [video, ...(p.videos ?? [])];
   store.set(id, p);
+  await persist();
   return p;
 }
 
-export function listPersonas(): Persona[] {
+export async function listPersonas(): Promise<Persona[]> {
+  await ensureLoaded();
   return Array.from(store.values()).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
 
-export function getPersona(id: string): Persona | undefined {
+export async function getPersona(id: string): Promise<Persona | undefined> {
+  await ensureLoaded();
   return store.get(id);
 }
 
