@@ -1,0 +1,32 @@
+{
+  "personaId": "b43726b6-1c90-485e-83fa-652276458198",
+  "title": "Cholibrium — Mi rutina a los 55 (testimonial v2)",
+  "budgetUsd": 10,
+  "gate": true,
+  "scenePrompt": "Real lived-in home kitchen interior in the morning, empty (no people): warm wood cabinets, soft natural window light from the left, coffee mug and french press on the counter, shallow depth of field, photoreal, vertical 9:16, authentic and slightly imperfect, no text, no logos, no watermark",
+  "lock": {
+    "outfit": "Dark gray casual henley shirt, slightly worn-in, no logos or accessories.",
+    "background": "Warm wood cabinets, coffee mug out of focus on the counter, authentic slightly imperfect kitchen.",
+    "lighting": "Soft natural window light from the left, morning warmth, no studio or ring light.",
+    "camera": "Handheld front-camera selfie at arm's length, chest-up, slightly off-center, subtle natural shake, looks self-filmed on a phone.",
+    "emotionArc": "Shot 1 honest and slightly vulnerable → shot 2 quietly enthusiastic → shot 3 warm, relaxed, zero salesman energy.",
+    "gestures": "One hand always implied holding the phone; free hand does natural micro-gestures only; hands stay EMPTY the whole ad: no bottle, no product, no props."
+  },
+  "shots": [
+    {
+      "name": "Shot 1 · hook/dolor",
+      "prompt": "UGC testimonial talking-head, selfie style. @Image1 is the creator holding the phone at arm's length, talking directly into the lens, sincere and slightly vulnerable. On the word \"honest\" he leans in a touch closer. Natural micro-gestures with his free hand, small head movements, authentic pauses matching the audio.",
+      "script": "I'm fifty-five, and I finally got honest about my health. Coffee wasn't fixing my afternoons anymore. Something had to change."
+    },
+    {
+      "name": "Shot 2 · descubrimiento",
+      "prompt": "UGC testimonial talking-head, selfie style — direct continuity with the previous shot. @Image1 glances briefly off-camera as if recalling the moment, then returns his eyes to the lens and gives a small confident nod on the word \"steadier\".",
+      "script": "A buddy put me onto Cholibrium — functional mushrooms. It's just part of my morning now. Two weeks in? Steadier all day."
+    },
+    {
+      "name": "Shot 3 · cierre/CTA",
+      "prompt": "UGC testimonial talking-head, selfie style — closing shot, continuity locked. @Image1 delivers his closing line relaxed and warm: a soft self-aware half-laugh after \"myself\", then an open relaxed palm gesture with his free hand on \"that's all\", holding eye contact with the lens to the end.",
+      "script": "I'm not saying it's magic. I'm saying I feel more like myself again. Link's below if you're curious — that's all."
+    }
+  ]
+}

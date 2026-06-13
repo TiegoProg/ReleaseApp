@@ -3,6 +3,8 @@ import { z } from "zod";
 import { getPersona } from "@/lib/personas";
 import { generateVoice } from "@/lib/voice";
 import { startVideo } from "@/lib/seedance";
+import { getUgcTemplate, fillUgcTemplate, missingRequiredFields } from "@/lib/ugcTemplates";
+import { enhanceUgcPrompt, LIMITS } from "@/lib/ugcPrompt";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,26 +23,13 @@ const Body = z.object({
   motionPreset: z.string().optional(),
   references: z.array(RefSchema).optional().default([]),
   model: z.string().optional(), // override puntual del modelo Seedance (p.ej. pro)
+  // Modo template (Meta Ads): el server arma guion + prompt desde la estructura.
+  templateId: z.string().optional(),
+  templateValues: z.record(z.string()).optional().default({}),
 });
 
-// Reglas OCULTAS de calidad — se añaden a TODO render UGC. El dolor #1 de
-// reference-to-video con fondo es que el sujeto se ve "pegado" / sobreexpuesto;
-// estas reglas fuerzan integración de luz y realismo sin que el usuario lo escriba.
-function enhanceUgcPrompt(prompt: string): string {
-  return [
-    prompt.trim(),
-    "",
-    "— Realism & lighting integration (apply silently, always):",
-    "- The shot must look like ONE real photograph/video, never composited or pasted-on. Match lighting DIRECTION, intensity, color temperature, white balance and shadows between the person and the environment.",
-    "- Relight the subject to sit naturally INTO the scene: the person must NOT look brighter, flatter or more HDR than the background. Blend their skin with the ambient warm/cool cast of the set, lower their exposure to the room's level, and add soft, believable contact shadows. No glowing or over-exposed skin, no flat frontal ring-light look that clashes with the set.",
-    "- Preserve the EXACT identity, face and features of the @Image1 subject; keep real skin texture (visible pores, fine detail), tack-sharp focus on the eyes, natural catchlights, and NO waxy or plastic over-smoothing.",
-    "- Cinematic, photoreal color grade consistent across the whole frame; gentle film-like contrast, no blown highlights on the face.",
-    "- Avoid: halo / cut-out edges around the subject, distorted hands or faces, extra fingers, watermarks, captions, subtitles, logos or UI overlays.",
-  ].join("\n");
-}
-
-// Límites de Seedance 2.0 multi-referencia.
-const LIMITS = { image: 9, video: 3, audio: 3, total: 12 };
+// Reglas ocultas de calidad + límites multi-referencia: viven en lib/ugcPrompt.ts
+// (compartidas con el motor de producciones — una sola fuente de verdad).
 
 // Menú cerrado de presets de movimiento (se usa solo si el prompt va vacío).
 const PRESETS: Record<string, string> = {
@@ -68,14 +57,38 @@ export async function POST(req: NextRequest) {
   const refVideos = parsed.references.filter((r) => r.kind === "video").map((r) => r.url);
   const refAudios = parsed.references.filter((r) => r.kind === "audio").map((r) => r.url);
 
+  // 0) Modo template: el server arma guion + prompt desde la estructura (fuente
+  // de verdad), ignorando script/prompt libres. @Image2 = primera ref de imagen.
+  let script = parsed.script;
+  let templatePrompt = "";
+  if (parsed.templateId) {
+    const tpl = getUgcTemplate(parsed.templateId);
+    if (!tpl) {
+      return NextResponse.json({ error: `Template desconocido: ${parsed.templateId}` }, { status: 400 });
+    }
+    const missing = missingRequiredFields(tpl, parsed.templateValues);
+    if (missing.length) {
+      return NextResponse.json(
+        { error: `Faltan campos del template: ${missing.map((f) => f.label).join(", ")}.` },
+        { status: 400 }
+      );
+    }
+    const filled = fillUgcTemplate(tpl, parsed.templateValues, {
+      hasProductRef: refImages.length > 0,
+    });
+    script = filled.script;
+    templatePrompt = filled.scenePrompt;
+  }
+
   // 1) Voz pineada del guion (coherencia por persona). Va como @Audio1 si existe.
   let voiceMode = "off";
   let voiceUrl: string | undefined;
-  if (parsed.speak && parsed.script.trim()) {
+  if (parsed.speak && script.trim()) {
     const voice = await generateVoice({
-      text: parsed.script,
+      text: script,
       voiceName: persona.voiceName,
       language: persona.language,
+      elevenVoiceId: persona.elevenVoiceId,
     });
     voiceMode = voice.mode;
     voiceUrl = voice.audioUrl;
@@ -102,8 +115,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 4) Prompt final. Si el usuario escribió uno, manda él; si no, lo armamos del preset.
-  let prompt = parsed.prompt.trim();
+  // 4) Prompt final. Template > prompt del usuario > preset.
+  let prompt = templatePrompt || parsed.prompt.trim();
   if (!prompt) {
     const presetText = PRESETS[parsed.motionPreset ?? "talking-head"] ?? PRESETS["talking-head"];
     prompt = `@Image1 is a UGC creator, vertical 9:16 selfie framing. ${presetText}`;
@@ -111,8 +124,8 @@ export async function POST(req: NextRequest) {
   // Garantiza el lip-sync a la voz / el guion hablado aunque el usuario no lo escriba.
   if (voiceUrl && !/@Audio1/i.test(prompt)) {
     prompt += ` Lip-sync the speech precisely to @Audio1.`;
-  } else if (!voiceUrl && parsed.script.trim() && !/\bsays?\b/i.test(prompt)) {
-    prompt += ` The creator says: "${parsed.script.trim()}".`;
+  } else if (!voiceUrl && script.trim() && !/\bsays?\b/i.test(prompt)) {
+    prompt += ` The creator says: "${script.trim()}".`;
   }
 
   // Reglas ocultas de calidad/iluminación (siempre).
@@ -131,6 +144,7 @@ export async function POST(req: NextRequest) {
     job,
     voiceMode,
     prompt,
+    script, // guion final (armado por el template si aplica) — la UI lo persiste
     counts: { images: images.length, videos: videos.length, audios: audios.length, total },
   });
 }

@@ -1,0 +1,33 @@
+{
+  "personaId": "b43726b6-1c90-485e-83fa-652276458198",
+  "title": "Cholibrium — El marido escéptico (skit/testimonial v1)",
+  "budgetUsd": 10,
+  "gate": true,
+  "scenePrompt": "Real lived-in home living room interior in the evening, empty (no people): a comfortable fabric couch, a warm practical table lamp glowing, an out-of-focus bookshelf and a leafy plant in the background, cozy warm low lighting, shallow depth of field, photoreal, vertical 9:16, authentic and slightly imperfect, no text, no logos, no watermark",
+  "lock": {
+    "outfit": "Casual plaid flannel shirt worn open over a plain t-shirt, slightly worn-in, no logos or accessories.",
+    "background": "Cozy lived-in living room: fabric couch, warm table lamp glowing, out-of-focus bookshelf and leafy plant. Authentic, slightly imperfect.",
+    "lighting": "Warm practical table-lamp light, cozy evening glow, soft and low, no studio or ring light.",
+    "camera": "Handheld front-camera selfie at arm's length, chest-up, slightly off-center, subtle natural shake, looks self-filmed on a phone while sitting on the couch.",
+    "emotionArc": "Shot 1 amused and skeptical, telling a funny story on himself → shot 2 mock-reluctant, lightening up as he admits it → shot 3 warm, grinning, self-deprecating with zero salesman energy.",
+    "gestures": "One hand always implied holding the phone; free hand does natural expressive storytelling micro-gestures only; hands stay EMPTY the whole ad: no bottle, no product, no props."
+  },
+  "_voiceNote": "Los scripts incluyen un prefijo de DIRECCIÓN DE ESTILO para Gemini TTS (voz Charon en-US). Gemini lo interpreta como dirección y NO lo lee en voz alta (verificado). El cuerpo está escrito como HABLA REAL (titubeos/fragmentos) para que no suene a locución. Si se sube a ElevenLabs (plan pago), reemplazar el prefijo por audio tags v3 ([amused],[laughs],[pause]).",
+  "shots": [
+    {
+      "name": "Shot 1 · hook/escepticismo",
+      "prompt": "UGC skit-style testimonial, selfie, sitting relaxed on the couch. @Image1 is the creator telling a funny story on himself directly into the lens, amused and openly skeptical. He rolls his eyes a touch and gives a little disbelieving shake of the head on \"I laughed at her\". Natural expressive micro-gestures with his free hand, authentic comedic timing matching the audio.",
+      "script": "Spontaneous, like a real person talking mid-conversation — casual fifties guy, relaxed broken rhythm, natural little pauses and hesitations, NOT read aloud like a script: Okay so— my wife buys me these mushroom pills, right? And I just... I laughed at her. Out loud. I'm like, honey, I am not eating fungus for breakfast."
+    },
+    {
+      "name": "Shot 2 · me rendí/descubrimiento",
+      "prompt": "UGC skit-style testimonial, selfie — direct continuity with the previous shot, same couch and wardrobe. @Image1 gives a mock-reluctant little shrug as if caught being wrong, then lightens up and leans in slightly on \"steadier\". A small honest 'okay, fine' energy. Free-hand micro-gestures, hands EMPTY.",
+      "script": "Spontaneous, like a real person talking mid-conversation — casual fifties guy, relaxed broken rhythm, natural little pauses and hesitations, NOT read aloud like a script: But she keeps leaving 'em by my coffee. Every morning. So... fine, I caved. And — I mean, couple weeks in? My afternoons just... they felt steadier than they had in years."
+    },
+    {
+      "name": "Shot 3 · redención/CTA",
+      "prompt": "UGC skit-style testimonial, selfie — closing shot, continuity locked, same couch and wardrobe. @Image1 delivers the closing line warm and self-deprecating: a soft grin and a small 'what can you do' head tilt on \"she was right\", then an open relaxed palm gesture as he points down toward the link, holding eye contact with the lens to the end. Zero salesman energy. Hands EMPTY.",
+      "script": "Spontaneous, like a real person talking mid-conversation — casual fifties guy, relaxed broken rhythm, natural little pauses and hesitations, NOT read aloud like a script: And the worst part? I had to tell her she was right. Ugh. So look — if she's been, y'know, hinting? Link's down there. Just... don't gloat about it like she did."
+    }
+  ]
+}

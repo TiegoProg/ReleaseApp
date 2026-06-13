@@ -18,23 +18,38 @@ export interface VideoJob {
   mode: string;
   error?: string;
   costUsd?: number; // costo estimado del render (USD)
+  // URLs canónicas de poll que devuelve fal al encolar. Persistirlas junto al
+  // requestId (p.ej. en una producción) permite pollear tras un reinicio del
+  // server, cuando la Map en memoria ya no existe.
+  statusUrl?: string;
+  responseUrl?: string;
 }
 
 // Costo estimado por render (USD). NO son precios oficiales de fal — son tarifas
 // configurables por env para mostrar un costo aproximado por video en la UI.
-function estimateCostUsd(tier: string, resolution: string, durationSec: number): number {
+export function estimateCostUsd(
+  tier: string,
+  resolution: string,
+  durationSec: number,
+  hasVideoInput = false
+): number {
   if (tier === "stub") return 0;
-  const perSecPro = Number(process.env.SEEDANCE_COST_PRO_PER_SEC || 0.15);
-  const perSecFast = Number(process.env.SEEDANCE_COST_FAST_PER_SEC || 0.09);
+  // Tarifas reales de fal (reference-to-video, 720p): pro $0.3024/s, fast $0.2419/s.
+  const perSecPro = Number(process.env.SEEDANCE_COST_PRO_PER_SEC || 0.3024);
+  const perSecFast = Number(process.env.SEEDANCE_COST_FAST_PER_SEC || 0.2419);
   const base = tier === "fal-pro" ? perSecPro : perSecFast;
   const resMult = resolution.includes("1080") ? 1.5 : 1;
-  return Math.round(base * durationSec * resMult * 100) / 100;
+  // fal cobra 0.6× cuando hay video(s) de referencia en reference-to-video.
+  const videoInputMult = hasVideoInput ? 0.6 : 1;
+  return Math.round(base * durationSec * resMult * videoInputMult * 100) / 100;
 }
 
 const FAL_QUEUE = "https://queue.fal.run";
 
+// OJO: en fal solo existen "standard" (sin sufijo, hasta 1080p) y "fast" —
+// NO existe tier "pro" (un path /pro/ encola y "completa" con error al instante).
 function model(): string {
-  return process.env.SEEDANCE_MODEL || "bytedance/seedance-2.0/pro/reference-to-video";
+  return process.env.SEEDANCE_MODEL || "bytedance/seedance-2.0/reference-to-video";
 }
 
 // fal devuelve status_url / response_url al encolar; las guardamos por requestId
@@ -97,6 +112,7 @@ export async function startVideo(input: {
   audioUrls?: string[];
   prompt: string;
   model?: string; // override puntual del modelo (p.ej. forzar pro sin tocar el env)
+  seed?: number; // seed de movimiento (reproducibilidad entre shots de una secuencia)
 }): Promise<VideoJob> {
   const key = process.env.FAL_KEY;
   if (!key) {
@@ -104,10 +120,11 @@ export async function startVideo(input: {
   }
 
   const selectedModel = input.model || model();
-  const tier = selectedModel.includes("/pro/") ? "fal-pro" : selectedModel.includes("/fast/") ? "fal-fast" : "fal";
+  const tier = selectedModel.includes("/fast/") ? "fal-fast" : "fal-pro"; // standard = tarifa "pro"
   const resolution = process.env.SEEDANCE_RESOLUTION || "720p";
   const duration = process.env.SEEDANCE_DURATION || "8";
-  const costUsd = estimateCostUsd(tier, resolution, Number(duration) || 8);
+  const hasVideoInput = (input.videoUrls ?? []).some(Boolean);
+  const costUsd = estimateCostUsd(tier, resolution, Number(duration) || 8, hasVideoInput);
 
   const images = (input.imageUrls ?? []).filter(Boolean);
   const videos = (input.videoUrls ?? []).filter(Boolean);
@@ -125,6 +142,8 @@ export async function startVideo(input: {
   if (videos.length) body.video_urls = videos;
   // Voz pineada de Gemini + audios de referencia (@Audio1.. en el prompt).
   if (audios.length) body.audio_urls = audios;
+  // Seed solo si el caller la pide explícitamente (reproducibilidad de secuencia).
+  if (typeof input.seed === "number" && Number.isFinite(input.seed)) body.seed = input.seed;
 
   try {
     const res = await fetch(`${FAL_QUEUE}/${selectedModel}`, {
@@ -148,20 +167,29 @@ export async function startVideo(input: {
     const statusUrl = data?.status_url ?? `${FAL_QUEUE}/${selectedModel}/requests/${requestId}/status`;
     const responseUrl = data?.response_url ?? `${FAL_QUEUE}/${selectedModel}/requests/${requestId}`;
     falJobs.set(requestId, { statusUrl, responseUrl });
-    return { status: "rendering", requestId, mode: tier, costUsd };
+    return { status: "rendering", requestId, mode: tier, costUsd, statusUrl, responseUrl };
   } catch (e: any) {
     return { status: "failed", mode: tier, error: e?.message ?? String(e), costUsd };
   }
 }
 
-/** Consulta el estado de un job de fal y, si terminó, devuelve la URL del video. */
-export async function pollVideo(requestId: string): Promise<VideoJob> {
+/**
+ * Consulta el estado de un job de fal y, si terminó, devuelve la URL del video.
+ * `knownUrls` (opcional) son las URLs canónicas persistidas por el caller — las
+ * usa como fallback si la Map en memoria murió (reinicio del server / HMR).
+ */
+export async function pollVideo(
+  requestId: string,
+  knownUrls?: { statusUrl?: string; responseUrl?: string }
+): Promise<VideoJob> {
   const key = process.env.FAL_KEY;
   if (!key) return { status: "stub", videoUrl: placeholderVideo(), mode: "stub" };
 
   const urls = falJobs.get(requestId);
-  const statusUrl = urls?.statusUrl ?? `${FAL_QUEUE}/${model()}/requests/${requestId}/status`;
-  const responseUrl = urls?.responseUrl ?? `${FAL_QUEUE}/${model()}/requests/${requestId}`;
+  const statusUrl =
+    urls?.statusUrl ?? knownUrls?.statusUrl ?? `${FAL_QUEUE}/${model()}/requests/${requestId}/status`;
+  const responseUrl =
+    urls?.responseUrl ?? knownUrls?.responseUrl ?? `${FAL_QUEUE}/${model()}/requests/${requestId}`;
 
   try {
     const statusRes = await fetch(statusUrl, {
@@ -170,6 +198,10 @@ export async function pollVideo(requestId: string): Promise<VideoJob> {
     });
     const status = await safeJson(statusRes);
     const s = status?.status;
+    // Estados terminales de error de fal (hoy se quedaban como "rendering" eterno).
+    if (s === "FAILED" || s === "ERROR" || s === "CANCELLED") {
+      return { status: "failed", requestId, mode: "fal", error: `fal status ${s}.` };
+    }
     // IN_QUEUE / IN_PROGRESS / null (aún sin body) -> seguimos renderizando.
     if (s !== "COMPLETED") {
       return { status: "rendering", requestId, mode: "fal" };
@@ -181,7 +213,14 @@ export async function pollVideo(requestId: string): Promise<VideoJob> {
     const result = await safeJson(resultRes);
     const falUrl = result?.video?.url ?? result?.data?.video?.url ?? result?.videos?.[0]?.url;
     if (!falUrl) {
-      return { status: "failed", requestId, mode: "fal", error: "Render listo pero sin URL de video." };
+      // Surfacear el error real de fal (p.ej. {"detail":"Path ... not found"}).
+      const detail = result?.detail ?? result?.error ?? JSON.stringify(result)?.slice(0, 160);
+      return {
+        status: "failed",
+        requestId,
+        mode: "fal",
+        error: `Render completó sin URL de video. fal dice: ${detail}`,
+      };
     }
     // Persistimos el mp4 (la URL de fal expira); si no hay storage, usamos la de fal.
     const permanentUrl = (await storeVideo(falUrl)) ?? falUrl;

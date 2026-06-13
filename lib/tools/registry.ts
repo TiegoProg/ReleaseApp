@@ -8,6 +8,7 @@ import { generateImage } from "./image";
 import { generateVideo } from "./video";
 import { webSearch } from "./search";
 import { delegateToArea, requestUserInput, spawnSubagent } from "./subagent";
+import { listUgcPersonas, produceUgcAd, checkUgcProduction } from "./ugcStudio";
 import { getMcpTools } from "../mcp";
 
 export const MAX_DEPTH = 2;
@@ -28,6 +29,9 @@ function allTools(): Record<string, ToolDef> {
     delegate_to_area: delegateToArea,
     request_user_input: requestUserInput,
     spawn_subagent: spawnSubagent,
+    list_ugc_personas: listUgcPersonas,
+    produce_ugc_ad: produceUgcAd,
+    check_ugc_production: checkUgcProduction,
     ...getMcpTools(), // tools registradas vía MCP
   };
 }
@@ -35,7 +39,16 @@ function allTools(): Record<string, ToolDef> {
 // Tools por área.
 const AREA_TOOLS: Record<AreaKey, string[]> = {
   research: ["web_search", "write_brief", "read_board", "spawn_subagent"],
-  creative: ["generate_image", "generate_video", "write_copy", "read_board", "spawn_subagent"],
+  creative: [
+    "generate_image",
+    "generate_video",
+    "write_copy",
+    "read_board",
+    "spawn_subagent",
+    "list_ugc_personas",
+    "produce_ugc_ad",
+    "check_ugc_production",
+  ],
   content: ["write_script", "content_calendar", "read_board", "spawn_subagent"],
   media: ["allocate_budget", "channel_plan", "read_board", "spawn_subagent"],
 };

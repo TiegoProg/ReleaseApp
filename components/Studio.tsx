@@ -1,9 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { motion } from "framer-motion";
 import { Icon } from "./Icon";
 import { useUiStore } from "@/lib/uiStore";
+import {
+  UGC_TEMPLATES,
+  getUgcTemplate,
+  fillUgcTemplate,
+  missingRequiredFields,
+  type UgcTemplateDef,
+} from "@/lib/ugcTemplates";
 
 // ============================================================================
 // UGC Studio — creación tipo Higgsfield: avatar (identity-lock) → character
@@ -61,13 +68,6 @@ interface TaggedMaterial {
 // Límites de Seedance 2.0 multi-referencia.
 const LIMITS = { image: 9, video: 3, audio: 3, total: 12 };
 
-const PRESETS: { key: string; label: string }[] = [
-  { key: "talking-head", label: "Talking head" },
-  { key: "unboxing", label: "Unboxing" },
-  { key: "review", label: "Review" },
-  { key: "try-on", label: "Try-on" },
-];
-
 // Expresiones rápidas — inyectan una directiva en el prompt ("manejar expresiones").
 const EXPRESSIONS: { key: string; label: string; text: string }[] = [
   { key: "smiling", label: "Smiling", text: "warm, genuine smile" },
@@ -80,6 +80,27 @@ const EXPRESSIONS: { key: string; label: string; text: string }[] = [
 
 const DEFAULT_SCRIPT_HINT =
   "Shot on iPhone front camera, vertical 9:16, natural HDR, real skin tones, authentic UGC creator energy…";
+
+// Modelo Seedance según calidad elegida (mismo override que manda generate()).
+// "final" = standard (máxima calidad; en fal NO existe tier "pro").
+function seedanceModel(quality: "draft" | "final"): string {
+  return quality === "draft"
+    ? "bytedance/seedance-2.0/fast/reference-to-video"
+    : "bytedance/seedance-2.0/reference-to-video";
+}
+
+// Clip propuesto por el agente de prompts (/api/ugc/assist).
+interface AssistClip {
+  templateId: string;
+  values: Record<string, string>;
+  rationale?: string;
+}
+interface AssistMsg {
+  role: "user" | "assistant";
+  content: string;
+  questions?: string[];
+  plan?: { title?: string; clips: AssistClip[] };
+}
 
 // Reglas de iconos por tipo de material.
 const KIND_ICON: Record<RefKind, any> = { image: "image", video: "video", audio: "mic" };
@@ -113,12 +134,22 @@ export default function Studio() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [loadingRoster, setLoadingRoster] = useState(true);
+  // Proyecto del avatar: modal con sus videos, identidad y stats.
+  const [projectOpen, setProjectOpen] = useState(false);
+  // Asistente (agente de prompts): planifica el ad y produce los clips.
+  const [assistOpen, setAssistOpen] = useState(false);
 
   // Compositor
   const [prompt, setPrompt] = useState("");
   const [script, setScript] = useState("");
   const [speak, setSpeak] = useState(true);
-  const [preset, setPreset] = useState("talking-head");
+  // Formato Meta Ads: "libre" = compositor manual; otro id = template guiado
+  // (el server arma guion + prompt desde lib/ugcTemplates).
+  const [templateId, setTemplateId] = useState("libre");
+  const [templateValues, setTemplateValues] = useState<Record<string, string>>({});
+  // Calidad/costo del render: "draft" = Seedance Fast (más barato, para iterar);
+  // "final" = Pro (máxima calidad). El modelo se manda como override por request.
+  const [quality, setQuality] = useState<"draft" | "final">("final");
   const [materials, setMaterials] = useState<Material[]>([]);
 
   // Generación de video
@@ -130,17 +161,31 @@ export default function Studio() {
 
   const selected = personas.find((p) => p.id === selectedId) ?? null;
 
+  // Template activo + guion armado en vivo (mismo builder que usa el server).
+  const activeTemplate: UgcTemplateDef | undefined =
+    templateId === "libre" ? undefined : getUgcTemplate(templateId);
+  const assembledScript = useMemo(() => {
+    if (!activeTemplate) return "";
+    return fillUgcTemplate(activeTemplate, templateValues, {
+      hasProductRef: materials.some((m) => m.kind === "image"),
+    }).script;
+  }, [activeTemplate, templateValues, materials]);
+
+  // Guion efectivo: el del template (si está activo) o el manual.
+  const effectiveScript = activeTemplate ? assembledScript : script;
+
   const tags = useMemo(
-    () => (selected ? buildTags(selected.name, materials, speak && !!script.trim()) : []),
-    [selected, materials, speak, script]
+    () => (selected ? buildTags(selected.name, materials, speak && !!effectiveScript.trim()) : []),
+    [selected, materials, speak, effectiveScript]
   );
 
   const counts = useMemo(() => {
     const images = 1 + materials.filter((m) => m.kind === "image").length; // +avatar
     const videos = materials.filter((m) => m.kind === "video").length;
-    const audios = (speak && script.trim() ? 1 : 0) + materials.filter((m) => m.kind === "audio").length;
+    const audios =
+      (speak && effectiveScript.trim() ? 1 : 0) + materials.filter((m) => m.kind === "audio").length;
     return { images, videos, audios, total: images + videos + audios };
-  }, [materials, speak, script]);
+  }, [materials, speak, effectiveScript]);
 
   const overLimit =
     counts.images > LIMITS.image ||
@@ -185,8 +230,13 @@ export default function Studio() {
 
   const generate = useCallback(async () => {
     if (!selected || videoStatus === "rendering" || overLimit) return;
-    // Necesita guion hablado o un prompt libre.
-    if (!script.trim() && !prompt.trim()) return;
+    if (activeTemplate) {
+      // Modo template: requiere los campos obligatorios completos.
+      if (missingRequiredFields(activeTemplate, templateValues).length) return;
+    } else if (!script.trim() && !prompt.trim()) {
+      // Modo libre: necesita guion hablado o un prompt.
+      return;
+    }
 
     setVideoStatus("rendering");
     setVideoUrl(null);
@@ -196,6 +246,7 @@ export default function Studio() {
 
     try {
       const references = materials.map((m) => ({ kind: m.kind, url: m.url }));
+      const model = seedanceModel(quality);
       const res = await fetch("/api/ugc", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -203,14 +254,19 @@ export default function Studio() {
           personaId: selected.id,
           prompt,
           script,
-          speak,
-          motionPreset: preset,
+          // El template siempre voicea (el lip-sync depende de @Audio1).
+          speak: activeTemplate ? true : speak,
           references,
+          model,
+          templateId: activeTemplate?.id,
+          templateValues: activeTemplate ? templateValues : undefined,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "No se pudo generar.");
       const job = data.job;
+      // Guion final (el server lo arma en modo template) — para persistirlo.
+      const finalScript: string = data.script || script || prompt;
       const cost: number | undefined = job?.costUsd;
       const costLabel = cost != null ? ` · ≈ $${cost.toFixed(2)}` : "";
       setVideoMeta(`voz: ${data.voiceMode} · video: ${job.mode} · ${data.counts?.total ?? "?"} materiales${costLabel}`);
@@ -224,7 +280,14 @@ export default function Studio() {
           const r = await fetch("/api/ugc/save", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ personaId, videoUrl: url, script: script || prompt, preset, cost, model: job?.mode }),
+            body: JSON.stringify({
+              personaId,
+              videoUrl: url,
+              script: finalScript,
+              preset: activeTemplate?.id ?? "libre",
+              cost,
+              model: job?.mode,
+            }),
           });
           const d = await r.json();
           if (r.ok && d.persona)
@@ -269,7 +332,7 @@ export default function Studio() {
       setVideoError(e?.message ?? "Error al generar.");
       setVideoStatus("failed");
     }
-  }, [selected, prompt, script, speak, preset, materials, videoStatus, overLimit]);
+  }, [selected, prompt, script, speak, quality, materials, videoStatus, overLimit, activeTemplate, templateValues]);
 
   return (
     <div className="mx-auto flex h-full max-w-[1200px] flex-col gap-4">
@@ -282,19 +345,33 @@ export default function Studio() {
             Avatares consistentes (GPT Image 2) animados a video hablado con referencias múltiples (Seedance 2.0).
           </p>
         </div>
-        {!config?.hasOpenAI && (
-          <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11.5px] font-medium text-amber-700">
-            Sin OPENAI_API_KEY → avatares en modo stub
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {!config?.hasOpenAI && (
+            <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11.5px] font-medium text-amber-700">
+              Sin OPENAI_API_KEY → avatares en modo stub
+            </span>
+          )}
+          <button
+            onClick={() => setAssistOpen(true)}
+            disabled={!selected}
+            title={selected ? "El agente arma el plan del anuncio y produce los clips" : "Crea o selecciona un avatar primero"}
+            className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-[13px] font-semibold text-white shadow-soft transition disabled:cursor-not-allowed disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg,#ec4899,#8b5cf6)" }}
+          >
+            <Icon name="sparkle" size={15} /> Asistente IA
+          </button>
+        </div>
       </div>
 
-      {/* roster de avatares */}
+      {/* roster de avatares — click = seleccionar + abrir su proyecto */}
       <AvatarRoster
         personas={personas}
         selectedId={selectedId}
         loading={loadingRoster}
-        onSelect={setSelectedId}
+        onSelect={(id) => {
+          setSelectedId(id);
+          setProjectOpen(true);
+        }}
         onCreate={() => setCreating(true)}
       />
 
@@ -307,6 +384,7 @@ export default function Studio() {
             videoUrl={videoUrl}
             videoError={videoError}
             videoMeta={videoMeta}
+            onOpenProject={() => setProjectOpen(true)}
           />
         ) : (
           <EmptyState onCreate={() => setCreating(true)} />
@@ -323,8 +401,13 @@ export default function Studio() {
           onScript={setScript}
           speak={speak}
           onSpeak={setSpeak}
-          preset={preset}
-          onPreset={setPreset}
+          quality={quality}
+          onQuality={setQuality}
+          templateId={templateId}
+          onTemplateId={setTemplateId}
+          templateValues={templateValues}
+          onTemplateValues={setTemplateValues}
+          assembledScript={assembledScript}
           materials={materials}
           onAddMaterial={addMaterial}
           onRemoveMaterial={removeMaterial}
@@ -336,10 +419,26 @@ export default function Studio() {
         />
       )}
 
-      {/* modal crear avatar */}
-      <AnimatePresence>
-        {creating && <CreateAvatarModal onClose={() => setCreating(false)} onCreated={onCreated} />}
-      </AnimatePresence>
+      {/* Modales SIN AnimatePresence: con reactStrictMode el exit nunca
+          desmonta (modal zombie invisible que bloquea clicks). Entrada animada
+          via initial/animate; la salida es instantánea. */}
+      {creating && <CreateAvatarModal onClose={() => setCreating(false)} onCreated={onCreated} />}
+      {projectOpen && selected && (
+        <AvatarProjectModal persona={selected} onClose={() => setProjectOpen(false)} />
+      )}
+      {assistOpen && selected && (
+        <AssistantPanel
+          persona={selected}
+          quality={quality}
+          onClose={() => setAssistOpen(false)}
+          onApply={(clip) => {
+            setTemplateId(clip.templateId);
+            setTemplateValues(clip.values);
+            setAssistOpen(false);
+          }}
+          onPersona={(p) => setPersonas((prev) => prev.map((x) => (x.id === p.id ? p : x)))}
+        />
+      )}
     </div>
   );
 }
@@ -419,12 +518,14 @@ function PersonaCanvas({
   videoUrl,
   videoError,
   videoMeta,
+  onOpenProject,
 }: {
   persona: Persona;
   videoStatus: VideoStatus;
   videoUrl: string | null;
   videoError: string | null;
   videoMeta: string;
+  onOpenProject: () => void;
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const totalCost = (persona.videos ?? []).reduce((s, v) => s + (v.cost ?? 0), 0);
@@ -443,13 +544,22 @@ function PersonaCanvas({
             {totalCost > 0 && <span className="text-ink-soft"> · ≈ ${totalCost.toFixed(2)} gastado</span>}
           </div>
         </div>
-        <button
-          onClick={() => setDetailsOpen((o) => !o)}
-          className="ml-auto flex items-center gap-1.5 rounded-lg border border-line bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-ink-soft shadow-soft transition hover:text-ink"
-        >
-          {detailsOpen ? "Ocultar detalles" : "Ver character sheet"}
-          <Icon name="chevron" size={13} className={detailsOpen ? "-rotate-90" : "rotate-90"} />
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={onOpenProject}
+            className="flex items-center gap-1.5 rounded-lg border border-line bg-white px-2.5 py-1.5 text-[11.5px] font-semibold text-ink shadow-soft transition hover:border-area-creative hover:text-area-creative"
+          >
+            <Icon name="video" size={13} />
+            Proyecto · {persona.videos?.length ?? 0}
+          </button>
+          <button
+            onClick={() => setDetailsOpen((o) => !o)}
+            className="flex items-center gap-1.5 rounded-lg border border-line bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-ink-soft shadow-soft transition hover:text-ink"
+          >
+            {detailsOpen ? "Ocultar detalles" : "Character sheet"}
+            <Icon name="chevron" size={13} className={detailsOpen ? "-rotate-90" : "rotate-90"} />
+          </button>
+        </div>
       </div>
 
       {(detailsOpen || rendering) && (
@@ -544,40 +654,507 @@ function PersonaCanvas({
       </div>
       )}
 
-      {/* galería de clips generados (persistidos en la persona) */}
+      {/* resumen del proyecto (la galería completa vive en el modal) */}
       {persona.videos && persona.videos.length > 0 && (
-        <div className="floor-plate p-4">
-          <div className="mb-2.5 flex items-center justify-between">
-            <span className="label-mono">Videos de {persona.name}</span>
-            <span className="text-[11.5px] text-ink-mute">
-              {persona.videos.length} guardados
-              {totalCost > 0 && <span className="ml-2 text-ink-soft">· ≈ ${totalCost.toFixed(2)} total</span>}
-            </span>
-          </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            {persona.videos.map((v, i) => (
-              <div key={i} className="overflow-hidden rounded-xl border border-line bg-black/90">
-                <div className="relative">
-                  <video
-                    src={v.url}
-                    poster={persona.avatarUrl}
-                    controls
-                    playsInline
-                    className="aspect-[9/16] w-full object-cover"
-                  />
-                  {v.cost != null && (
-                    <span className="absolute right-1.5 top-1.5 rounded-md bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur">
-                      ≈ ${v.cost.toFixed(2)}
-                    </span>
-                  )}
-                </div>
-                <p className="line-clamp-2 px-2 py-1.5 text-[11px] text-ink-mute">{v.script}</p>
-              </div>
+        <button
+          onClick={onOpenProject}
+          className="floor-plate group flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:border-area-creative/40"
+        >
+          <div className="flex -space-x-2">
+            {persona.videos.slice(0, 3).map((v, i) => (
+              <span
+                key={i}
+                className="grid h-8 w-8 place-items-center overflow-hidden rounded-lg border-2 border-white bg-ink/90 shadow-soft"
+              >
+                <Icon name="video" size={13} className="text-white/70" />
+              </span>
             ))}
           </div>
-        </div>
+          <span className="text-[12.5px] text-ink-soft">
+            <b className="font-semibold text-ink">{persona.videos.length} videos</b> generados
+            {totalCost > 0 && <span className="text-ink-mute"> · ≈ ${totalCost.toFixed(2)} invertido</span>}
+          </span>
+          <span className="ml-auto flex items-center gap-1 text-[11.5px] font-semibold text-area-creative opacity-0 transition group-hover:opacity-100">
+            Ver proyecto <Icon name="chevron" size={12} />
+          </span>
+        </button>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Proyecto del avatar: de qué trata + galería de videos generados
+// ---------------------------------------------------------------------------
+function AvatarProjectModal({ persona, onClose }: { persona: Persona; onClose: () => void }) {
+  const videos = persona.videos ?? [];
+  const totalCost = videos.reduce((s, v) => s + (v.cost ?? 0), 0);
+
+  // Etiqueta legible del formato con el que se generó cada clip.
+  // Cubre también los presets antiguos (antes de los templates Meta Ads).
+  const LEGACY_LABELS: Record<string, string> = {
+    "talking-head": "Talking head",
+    unboxing: "Unboxing",
+    review: "Review",
+    "try-on": "Try-on",
+  };
+  const formatLabel = (preset?: string) => {
+    if (!preset || preset === "libre") return "Libre";
+    return getUgcTemplate(preset)?.label ?? LEGACY_LABELS[preset] ?? preset;
+  };
+
+  return (
+    // El root DEBE ser motion.div: AnimatePresence solo desmonta cuando su hijo
+    // directo (motion) completa el exit; con un div plano queda un modal zombie.
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[60] grid place-items-center p-4"
+    >
+      <div onClick={onClose} className="absolute inset-0 bg-ink/35 backdrop-blur-[3px]" />
+      <motion.div
+        initial={{ y: 20, scale: 0.98 }}
+        animate={{ y: 0, scale: 1 }}
+        transition={{ type: "spring", stiffness: 320, damping: 30 }}
+        className="relative flex max-h-[88vh] w-full max-w-[960px] flex-col overflow-hidden rounded-3xl border border-line bg-canvas shadow-lift"
+      >
+        {/* header: quién es + de qué trata */}
+        <div className="flex items-start gap-4 border-b border-line px-6 py-5">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={persona.avatarUrl}
+            alt={persona.name}
+            className="h-16 w-16 shrink-0 rounded-2xl border border-line object-cover shadow-soft"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="label-mono">Proyecto</div>
+            <h2 className="font-display text-[20px] font-bold tracking-tighter-2 text-ink">{persona.name}</h2>
+            <p className="mt-0.5 line-clamp-2 text-[12.5px] leading-snug text-ink-soft">{persona.identity}</p>
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <Chip icon="mic" text={`${persona.voiceName} · ${persona.language}`} />
+              <Chip icon="refresh" text={`seed ${persona.seed}`} />
+              {persona.product && <Chip icon="image" text={persona.product} />}
+              <Chip icon="video" text={`${videos.length} videos`} />
+              {totalCost > 0 && <Chip icon="sparkle" text={`≈ $${totalCost.toFixed(2)} invertido`} />}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-line bg-white text-ink-soft shadow-soft transition hover:text-ink"
+            aria-label="Cerrar"
+          >
+            <Icon name="close" size={17} />
+          </button>
+        </div>
+
+        {/* galería */}
+        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          {videos.length === 0 ? (
+            <div className="grid place-items-center py-14 text-center">
+              <Icon name="video" size={28} className="mb-2 text-ink-mute" />
+              <p className="text-[13.5px] font-medium text-ink-soft">Aún no hay videos de {persona.name}.</p>
+              <p className="mt-1 text-[12px] text-ink-mute">
+                Cierra este panel, elige un formato en el compositor y dale Generar.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+              {videos.map((v, i) => (
+                <div
+                  key={i}
+                  className="group overflow-hidden rounded-2xl border border-line bg-white shadow-soft transition hover:shadow-lift"
+                >
+                  <div className="relative bg-ink">
+                    <video
+                      src={v.url}
+                      poster={persona.avatarUrl}
+                      controls
+                      playsInline
+                      preload="metadata"
+                      className="aspect-[9/16] w-full object-cover"
+                    />
+                    <span className="absolute left-1.5 top-1.5 rounded-md bg-black/65 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur">
+                      {formatLabel(v.preset)}
+                    </span>
+                    {v.cost != null && (
+                      <span className="absolute right-1.5 top-1.5 rounded-md bg-black/65 px-1.5 py-0.5 text-[10px] font-semibold text-white backdrop-blur">
+                        ≈ ${v.cost.toFixed(2)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="px-2.5 py-2">
+                    <p className="line-clamp-2 text-[11.5px] leading-snug text-ink-soft">{v.script}</p>
+                    <p className="mt-1 text-[10.5px] text-ink-mute">
+                      {v.createdAt ? new Date(v.createdAt).toLocaleDateString() : ""}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function Chip({ icon, text }: { icon: any; text: string }) {
+  return (
+    <span className="flex items-center gap-1 rounded-full border border-line bg-white px-2 py-0.5 text-[10.5px] font-medium text-ink-soft shadow-soft">
+      <Icon name={icon} size={11} className="text-ink-mute" />
+      {text}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Asistente IA: agente de prompts que planifica el anuncio (chat) y PRODUCE
+// los clips hasta el objetivo (secuencial: /api/ugc → poll → save).
+// ---------------------------------------------------------------------------
+type ClipJobStatus = "pending" | "rendering" | "ready" | "failed";
+interface ClipJob {
+  label: string;
+  status: ClipJobStatus;
+  url?: string;
+  cost?: number;
+  error?: string;
+}
+
+function AssistantPanel({
+  persona,
+  quality,
+  onClose,
+  onApply,
+  onPersona,
+}: {
+  persona: Persona;
+  quality: "draft" | "final";
+  onClose: () => void;
+  onApply: (clip: AssistClip) => void;
+  onPersona: (p: Persona) => void;
+}) {
+  const [messages, setMessages] = useState<AssistMsg[]>([
+    {
+      role: "assistant",
+      content: `Soy tu director creativo. Dime qué anuncio quieres crear con ${persona.name} — producto, a quién apunta y qué quieres lograr — y armo el plan de clips listo para producir.`,
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [jobs, setJobs] = useState<ClipJob[]>([]);
+  const producing = jobs.some((j) => j.status === "pending" || j.status === "rendering");
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, jobs]);
+
+  // Último plan propuesto (el agente puede iterarlo; manda el más reciente).
+  const lastPlan = [...messages].reverse().find((m) => m.plan?.clips?.length)?.plan;
+
+  async function send() {
+    const text = input.trim();
+    if (!text || sending || producing) return;
+    setInput("");
+    const next: AssistMsg[] = [...messages, { role: "user", content: text }];
+    setMessages(next);
+    setSending(true);
+    try {
+      const res = await fetch("/api/ugc/assist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          personaId: persona.id,
+          messages: next.map((m) => ({ role: m.role, content: m.content })),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? "El asistente falló.");
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: data.reply, questions: data.questions, plan: data.plan },
+      ]);
+    } catch (e: any) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `⚠️ ${e?.message ?? "Error al consultar el asistente."}` },
+      ]);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  // Espera un render de fal hasta ready/failed (poll cada 5s, tope 6 min).
+  async function waitForJob(requestId: string): Promise<{ url?: string; error?: string }> {
+    const deadline = Date.now() + 6 * 60_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        const res = await fetch(`/api/ugc/status?requestId=${encodeURIComponent(requestId)}`);
+        const d = await res.json();
+        if (d.job?.status === "ready") return { url: d.job.videoUrl };
+        if (d.job?.status === "failed") return { error: d.job.error ?? "Render falló." };
+      } catch {
+        /* red intermitente: seguimos intentando hasta el deadline */
+      }
+    }
+    return { error: "Timeout esperando el render (6 min)." };
+  }
+
+  // Produce TODOS los clips del plan, en secuencia, hasta terminar (el objetivo).
+  async function produceAll(clips: AssistClip[]) {
+    if (producing) return;
+    const labels = clips.map((c, i) => {
+      const tpl = getUgcTemplate(c.templateId);
+      return `Clip ${i + 1} · ${tpl?.label ?? c.templateId}`;
+    });
+    setJobs(clips.map((_, i) => ({ label: labels[i], status: "pending" })));
+
+    const results: ClipJob[] = [];
+    for (let i = 0; i < clips.length; i++) {
+      setJobs((prev) => prev.map((j, k) => (k === i ? { ...j, status: "rendering" } : j)));
+      const clip = clips[i];
+      let result: ClipJob = { label: labels[i], status: "failed", error: "desconocido" };
+      try {
+        const res = await fetch("/api/ugc", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            personaId: persona.id,
+            templateId: clip.templateId,
+            templateValues: clip.values,
+            speak: true,
+            references: [],
+            model: seedanceModel(quality),
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error ?? "No se pudo encolar el render.");
+        const job = data.job;
+        if (job.status === "failed") throw new Error(job.error ?? "Render falló al encolar.");
+
+        let url: string | undefined = job.videoUrl;
+        if (job.status === "rendering" && job.requestId) {
+          const done = await waitForJob(job.requestId);
+          if (done.error) throw new Error(done.error);
+          url = done.url;
+        }
+        if (!url) throw new Error("Render sin URL de video.");
+
+        // Persistir en la persona (igual que el flujo manual).
+        try {
+          const saveRes = await fetch("/api/ugc/save", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              personaId: persona.id,
+              videoUrl: url,
+              script: data.script,
+              preset: clip.templateId,
+              cost: job.costUsd,
+              model: job.mode,
+            }),
+          });
+          const saved = await saveRes.json();
+          if (saveRes.ok && saved.persona) onPersona(saved.persona);
+        } catch {
+          /* el clip existe igual; solo falló persistirlo */
+        }
+        result = { label: labels[i], status: "ready", url, cost: job.costUsd };
+      } catch (e: any) {
+        result = { label: labels[i], status: "failed", error: e?.message ?? String(e) };
+      }
+      results.push(result);
+      setJobs((prev) => prev.map((j, k) => (k === i ? result : j)));
+    }
+
+    // Resumen final al chat (el agente "reporta" el cierre del objetivo).
+    const ok = results.filter((r) => r.status === "ready").length;
+    const spent = results.reduce((s, r) => s + (r.cost ?? 0), 0);
+    const fails = results
+      .filter((r) => r.status === "failed")
+      .map((r) => `${r.label}: ${r.error}`)
+      .join(" · ");
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        content:
+          ok === results.length
+            ? `✅ Objetivo cumplido: ${ok}/${results.length} clips producidos (≈ $${spent.toFixed(2)}). Están guardados en el proyecto de ${persona.name}.`
+            : `Terminé la producción: ${ok}/${results.length} clips listos${spent > 0 ? ` (≈ $${spent.toFixed(2)})` : ""}. Fallaron: ${fails}. Si fue saldo de fal, recarga y dime "reintenta" para volver a producir los que faltan.`,
+      },
+    ]);
+  }
+
+  const estPerClip = estimateUgcCost(quality, false);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="fixed inset-0 z-[60] flex justify-end"
+    >
+      <div onClick={producing ? undefined : onClose} className="absolute inset-0 bg-ink/35 backdrop-blur-[3px]" />
+      <motion.div
+        initial={{ x: 40 }}
+        animate={{ x: 0 }}
+        transition={{ type: "spring", stiffness: 320, damping: 32 }}
+        className="relative flex h-full w-full max-w-[460px] flex-col border-l border-line bg-canvas shadow-lift"
+      >
+        {/* header */}
+        <div className="flex items-center gap-3 border-b border-line px-4 py-3">
+          <span
+            className="grid h-9 w-9 place-items-center rounded-xl text-white"
+            style={{ background: "linear-gradient(135deg,#ec4899,#8b5cf6)" }}
+          >
+            <Icon name="sparkle" size={16} />
+          </span>
+          <div className="min-w-0">
+            <div className="text-[13.5px] font-bold text-ink">Asistente IA</div>
+            <div className="truncate text-[11px] text-ink-mute">
+              Director creativo · {persona.name} · {quality === "final" ? "Final · pro" : "Draft · fast"} · ≈ ${estPerClip.toFixed(2)}/clip
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={producing}
+            title={producing ? "Producción en curso — espera a que termine" : "Cerrar"}
+            className="ml-auto grid h-8 w-8 place-items-center rounded-lg border border-line bg-white text-ink-soft shadow-soft transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Cerrar asistente"
+          >
+            <Icon name="close" size={15} />
+          </button>
+        </div>
+
+        {/* conversación */}
+        <div ref={scrollRef} className="scroll-thin min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+          {messages.map((m, i) => (
+            <div key={i} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
+              <div
+                className={`max-w-[88%] rounded-2xl px-3 py-2 text-[12.5px] leading-snug ${
+                  m.role === "user"
+                    ? "bg-ink text-white"
+                    : "border border-line bg-white text-ink shadow-soft"
+                }`}
+              >
+                <p className="whitespace-pre-wrap">{m.content}</p>
+                {!!m.questions?.length && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {m.questions.map((q, k) => (
+                      <li key={k} className="text-[12px] font-medium text-area-creative">• {q}</li>
+                    ))}
+                  </ul>
+                )}
+                {/* plan propuesto: cards por clip */}
+                {!!m.plan?.clips?.length && (
+                  <div className="mt-2.5 space-y-2">
+                    {m.plan.title && (
+                      <div className="label-mono">{m.plan.title}</div>
+                    )}
+                    {m.plan.clips.map((clip, k) => {
+                      const tpl = getUgcTemplate(clip.templateId);
+                      const filled = tpl
+                        ? fillUgcTemplate(tpl, clip.values, { hasProductRef: false })
+                        : null;
+                      return (
+                        <div key={k} className="rounded-xl border border-line bg-surface-sunken p-2.5">
+                          <div className="flex items-center gap-1.5">
+                            <span className="rounded-md bg-ink px-1.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wide text-white">
+                              Clip {k + 1}
+                            </span>
+                            <span className="text-[11px] font-semibold text-ink">{tpl?.label ?? clip.templateId}</span>
+                            <button
+                              onClick={() => onApply(clip)}
+                              className="ml-auto rounded-md border border-line bg-white px-2 py-0.5 text-[10.5px] font-semibold text-ink-soft shadow-soft transition hover:text-ink"
+                              title="Cargar este clip en el compositor para editarlo"
+                            >
+                              Aplicar
+                            </button>
+                          </div>
+                          {filled && (
+                            <p className="mt-1.5 text-[11.5px] italic leading-snug text-ink-soft">“{filled.script}”</p>
+                          )}
+                          {clip.rationale && (
+                            <p className="mt-1 text-[10.5px] text-ink-mute">{clip.rationale}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {sending && (
+            <div className="flex items-center gap-2 text-[12px] text-ink-mute">
+              <Icon name="sparkle" size={14} className="animate-spin-slow text-area-creative" /> pensando…
+            </div>
+          )}
+
+          {/* progreso de producción */}
+          {jobs.length > 0 && (
+            <div className="rounded-2xl border border-line bg-white p-3 shadow-soft">
+              <div className="label-mono mb-1.5">Producción</div>
+              {jobs.map((j, i) => (
+                <div key={i} className="flex items-center gap-2 py-1 text-[12px]">
+                  {j.status === "ready" ? (
+                    <Icon name="check" size={13} className="text-status-done" />
+                  ) : j.status === "failed" ? (
+                    <Icon name="close" size={13} className="text-status-error" />
+                  ) : j.status === "rendering" ? (
+                    <Icon name="sparkle" size={13} className="animate-spin-slow text-area-creative" />
+                  ) : (
+                    <span className="h-3 w-3 rounded-full border border-line" />
+                  )}
+                  <span className="text-ink-soft">{j.label}</span>
+                  <span className="ml-auto text-[11px] text-ink-mute">
+                    {j.status === "ready" && `listo${j.cost != null ? ` · ≈ $${j.cost.toFixed(2)}` : ""}`}
+                    {j.status === "rendering" && "renderizando…"}
+                    {j.status === "pending" && "en cola"}
+                    {j.status === "failed" && (j.error ?? "falló")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* acciones del plan + input */}
+        <div className="border-t border-line bg-white/70 px-4 py-3 backdrop-blur">
+          {lastPlan && !producing && (
+            <button
+              onClick={() => produceAll(lastPlan.clips)}
+              className="mb-2 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-[13.5px] font-semibold text-white shadow-soft transition"
+              style={{ background: "linear-gradient(135deg,#ec4899,#8b5cf6)" }}
+            >
+              <Icon name="rocket" size={15} />
+              Producir {lastPlan.clips.length} clips · ≈ ${(lastPlan.clips.length * estPerClip).toFixed(2)}
+            </button>
+          )}
+          <div className="flex items-center gap-2">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && send()}
+              disabled={sending || producing}
+              placeholder={producing ? "Produciendo clips…" : "Ej: quiero un ad de Cholibrium para hombres 50+…"}
+              className="min-w-0 flex-1 rounded-xl border border-line bg-white px-3 py-2 text-[13px] text-ink shadow-soft outline-none placeholder:text-ink-mute focus:ring-2 focus:ring-area-creative/20 disabled:opacity-50"
+            />
+            <button
+              onClick={send}
+              disabled={!input.trim() || sending || producing}
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-ink text-white shadow-soft transition disabled:cursor-not-allowed disabled:opacity-30"
+              aria-label="Enviar"
+            >
+              <Icon name="chevron" size={15} />
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -595,6 +1172,14 @@ function Anchor({ icon, label, value }: { icon: any; label: string; value: strin
 
 // ---------------------------------------------------------------------------
 // Compositor multi-referencia (estilo Higgsfield + guía Seedance 2.0)
+// Estimación de costo en vivo — espejo de estimateCostUsd() en lib/seedance.ts.
+// 720p · 8s; pro $0.3024/s, fast $0.2419/s; 0.6× si hay video de referencia.
+function estimateUgcCost(quality: "draft" | "final", hasVideoInput: boolean): number {
+  const perSec = quality === "final" ? 0.3024 : 0.2419;
+  const videoMult = hasVideoInput ? 0.6 : 1;
+  return Math.round(perSec * 8 * videoMult * 100) / 100;
+}
+
 // ---------------------------------------------------------------------------
 function MultiRefComposer({
   persona,
@@ -604,8 +1189,13 @@ function MultiRefComposer({
   onScript,
   speak,
   onSpeak,
-  preset,
-  onPreset,
+  quality,
+  onQuality,
+  templateId,
+  onTemplateId,
+  templateValues,
+  onTemplateValues,
+  assembledScript,
   materials,
   onAddMaterial,
   onRemoveMaterial,
@@ -622,8 +1212,13 @@ function MultiRefComposer({
   onScript: (v: string) => void;
   speak: boolean;
   onSpeak: (v: boolean) => void;
-  preset: string;
-  onPreset: (v: string) => void;
+  quality: "draft" | "final";
+  onQuality: (v: "draft" | "final") => void;
+  templateId: string;
+  onTemplateId: (v: string) => void;
+  templateValues: Record<string, string>;
+  onTemplateValues: (v: Record<string, string>) => void;
+  assembledScript: string;
   materials: Material[];
   onAddMaterial: (m: Material) => void;
   onRemoveMaterial: (id: string) => void;
@@ -682,16 +1277,30 @@ function MultiRefComposer({
     onPrompt(prompt.trim() ? `${prompt.trim()} ${phrase}` : phrase);
   }
 
-  const canGenerate = (!!script.trim() || !!prompt.trim()) && !overLimit && status !== "rendering";
+  const tpl = templateId === "libre" ? undefined : getUgcTemplate(templateId);
+  const tplMissing = tpl ? missingRequiredFields(tpl, templateValues) : [];
+  const tplReady = !!tpl && tplMissing.length === 0;
+  // Lo que dirá el avatar (para la barra colapsada y el preview).
+  const spokenPreview = tpl ? assembledScript : script.trim() || prompt.trim();
+
+  const canGenerate =
+    (tpl ? tplReady : !!script.trim() || !!prompt.trim()) && !overLimit && status !== "rendering";
+
+  function setField(key: string, value: string) {
+    onTemplateValues({ ...templateValues, [key]: value });
+  }
 
   return (
     <div className="rounded-3xl border border-line bg-ink/[0.97] p-3 shadow-lift">
       {/* header: colapsar / expandir el compositor */}
       <div className="mb-2 flex items-center gap-2">
         <span className="text-[10.5px] font-semibold uppercase tracking-wide text-white/40">Compositor</span>
-        <span className="font-mono text-[10.5px] text-white/30">
-          {counts.images}img · {counts.videos}vid · {counts.audios}aud · {counts.total}/12
-        </span>
+        {/* contador solo colapsado: expandido ya se ve junto a Generar */}
+        {!open && (
+          <span className="font-mono text-[10.5px] text-white/30">
+            {counts.images}img · {counts.videos}vid · {counts.audios}aud · {counts.total}/12
+          </span>
+        )}
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
@@ -703,6 +1312,37 @@ function MultiRefComposer({
       </div>
 
       <div className={open ? "" : "hidden"}>
+      {/* formato Meta Ads: libre o template guiado */}
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-white/35">Formato</span>
+        <button
+          type="button"
+          onClick={() => onTemplateId("libre")}
+          className={`rounded-lg px-2.5 py-1 text-[11.5px] font-medium transition ${
+            !tpl ? "bg-white text-ink" : "bg-white/10 text-white/70 hover:bg-white/20"
+          }`}
+          title="Compositor manual: prompt + guion libres"
+        >
+          Libre
+        </button>
+        {UGC_TEMPLATES.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => onTemplateId(t.id)}
+            className={`rounded-lg px-2.5 py-1 text-[11.5px] font-medium transition ${
+              tpl?.id === t.id ? "bg-white text-ink" : "bg-white/10 text-white/70 hover:bg-white/20"
+            }`}
+            title={t.why}
+          >
+            {t.label}
+            <span className={`ml-1.5 text-[10px] ${tpl?.id === t.id ? "text-ink/60" : "text-white/40"}`}>
+              {t.tagline}
+            </span>
+          </button>
+        ))}
+      </div>
+
       {/* bandeja de materiales con tags */}
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
         {tags.map((t) => (
@@ -781,69 +1421,140 @@ function MultiRefComposer({
 
       {uploadError && <p className="mb-2 px-1 text-[11px] text-rose-300">{uploadError}</p>}
 
-      {/* prompt libre con menciones @ */}
-      <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-1">
-        <textarea
-          ref={promptRef}
-          value={prompt}
-          onChange={(e) => onPrompt(e.target.value)}
-          rows={2}
-          placeholder={`Prompt de la escena — escribe @ para insertar referencias (${DEFAULT_SCRIPT_HINT})`}
-          className="w-full resize-none bg-transparent px-2 py-1.5 text-[13.5px] text-white outline-none placeholder:text-white/35"
-        />
-        {/* guion hablado */}
-        <div className="flex items-center gap-2 border-t border-white/10 px-1.5 pt-1.5">
-          <Icon name="mic" size={14} className="shrink-0 text-white/45" />
-          <input
-            value={script}
-            onChange={(e) => onScript(e.target.value)}
-            placeholder={`Guion que dirá ${persona.name}… (voz ${persona.voiceName}, ${persona.language})`}
-            className="min-w-0 flex-1 bg-transparent py-0.5 text-[13px] text-white outline-none placeholder:text-white/30"
+      {!tpl ? (
+        /* prompt libre con menciones @ */
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-1">
+          <textarea
+            ref={promptRef}
+            value={prompt}
+            onChange={(e) => onPrompt(e.target.value)}
+            rows={2}
+            placeholder={`Prompt de la escena — escribe @ para insertar referencias (${DEFAULT_SCRIPT_HINT})`}
+            className="w-full resize-none bg-transparent px-2 py-1.5 text-[13.5px] text-white outline-none placeholder:text-white/35"
           />
-          <button
-            type="button"
-            onClick={() => onSpeak(!speak)}
-            className={`flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[10.5px] font-semibold transition ${
-              speak ? "bg-white/15 text-white" : "bg-white/5 text-white/40"
-            }`}
-            title="Generar voz a partir del guion (→ @Audio1)"
-          >
-            <Icon name={speak ? "check" : "close"} size={11} /> Voz
-          </button>
-        </div>
-      </div>
-
-      {/* expresiones */}
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-white/35">Expresión</span>
-        {EXPRESSIONS.map((ex) => (
-          <button
-            key={ex.key}
-            type="button"
-            onClick={() => applyExpression(ex.text)}
-            className="rounded-lg bg-white/8 px-2 py-1 text-[11px] font-medium text-white/65 transition hover:bg-white/20 hover:text-white"
-            title={ex.text}
-          >
-            {ex.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        {/* presets de movimiento */}
-        <div className="flex flex-wrap gap-1.5">
-          {PRESETS.map((p) => (
+          {/* guion hablado */}
+          <div className="flex items-center gap-2 border-t border-white/10 px-1.5 pt-1.5">
+            <Icon name="mic" size={14} className="shrink-0 text-white/45" />
+            <input
+              value={script}
+              onChange={(e) => onScript(e.target.value)}
+              placeholder={`Guion que dirá ${persona.name}… (voz ${persona.voiceName}, ${persona.language})`}
+              className="min-w-0 flex-1 bg-transparent py-0.5 text-[13px] text-white outline-none placeholder:text-white/30"
+            />
             <button
-              key={p.key}
-              onClick={() => onPreset(p.key)}
-              className={`rounded-lg px-2.5 py-1 text-[11.5px] font-medium transition ${
-                preset === p.key ? "bg-white text-ink" : "bg-white/10 text-white/70 hover:bg-white/20"
+              type="button"
+              onClick={() => onSpeak(!speak)}
+              className={`flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[10.5px] font-semibold transition ${
+                speak ? "bg-white/15 text-white" : "bg-white/5 text-white/40"
               }`}
+              title="Generar voz a partir del guion (→ @Audio1)"
             >
-              {p.label}
+              <Icon name={speak ? "check" : "close"} size={11} /> Voz
+            </button>
+          </div>
+        </div>
+      ) : (
+        /* campos guiados del template */
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-2.5">
+          <p className="mb-2 text-[11.5px] leading-snug text-white/45">{tpl.why}</p>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            {tpl.fields.map((f) => (
+              <label key={f.key} className={f.kind === "long" ? "md:col-span-2" : ""}>
+                <span className="mb-0.5 block text-[10.5px] font-semibold uppercase tracking-wide text-white/40">
+                  {f.label}
+                  {f.required && <span className="ml-1 text-rose-300">*</span>}
+                </span>
+                {f.kind === "long" ? (
+                  <textarea
+                    value={templateValues[f.key] ?? ""}
+                    onChange={(e) => setField(f.key, e.target.value)}
+                    rows={2}
+                    placeholder={f.placeholder}
+                    className="w-full resize-none rounded-xl border border-white/10 bg-white/[0.05] px-2 py-1.5 text-[13px] text-white outline-none placeholder:text-white/25 focus:border-white/30"
+                  />
+                ) : (
+                  <input
+                    value={templateValues[f.key] ?? ""}
+                    onChange={(e) => setField(f.key, e.target.value)}
+                    placeholder={f.placeholder}
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.05] px-2 py-1.5 text-[13px] text-white outline-none placeholder:text-white/25 focus:border-white/30"
+                  />
+                )}
+              </label>
+            ))}
+          </div>
+
+          {/* hint de producto (@Image2) + tips del formato */}
+          {tpl.needsProductRef && counts.images < 2 && (
+            <p className="mt-2 rounded-lg bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
+              Tip: sube una foto del producto (botón “+ Imagen”) — será <span className="font-mono">@Image2</span> y
+              Seedance lo replicará exacto.
+            </p>
+          )}
+          {!!tpl.notes?.length && (
+            <ul className="mt-2 space-y-0.5">
+              {tpl.notes.map((n, i) => (
+                <li key={i} className="text-[11px] text-white/35">· {n}</li>
+              ))}
+            </ul>
+          )}
+
+          {/* preview del guion que se voicea */}
+          <div className="mt-2 rounded-xl border border-white/10 bg-ink/60 px-2.5 py-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-white/35">
+              {persona.name} dirá (voz {persona.voiceName})
+            </span>
+            <p className={`mt-0.5 text-[12.5px] leading-snug ${assembledScript ? "text-white/85" : "italic text-white/30"}`}>
+              {assembledScript || "Completa los campos para armar el guion…"}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* expresiones (solo modo libre; el template define la energía) */}
+      {!tpl && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[10.5px] font-semibold uppercase tracking-wide text-white/35">Expresión</span>
+          {EXPRESSIONS.map((ex) => (
+            <button
+              key={ex.key}
+              type="button"
+              onClick={() => applyExpression(ex.text)}
+              className="rounded-lg bg-white/8 px-2 py-1 text-[11px] font-medium text-white/65 transition hover:bg-white/20 hover:text-white"
+              title={ex.text}
+            >
+              {ex.label}
             </button>
           ))}
         </div>
+      )}
+
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {/* calidad/costo: draft = Seedance Fast (barato, para iterar) · final = Pro */}
+        <div
+          className="flex items-center gap-0.5 rounded-lg bg-white/5 p-0.5"
+          title="Draft = Seedance Fast (más barato, para iterar) · Final = Pro (máxima calidad)"
+        >
+          {(["draft", "final"] as const).map((q) => (
+            <button
+              key={q}
+              type="button"
+              onClick={() => onQuality(q)}
+              className={`rounded-md px-2 py-1 text-[11px] font-medium transition ${
+                quality === q ? "bg-white text-ink" : "text-white/55 hover:text-white"
+              }`}
+            >
+              {q === "draft" ? "Draft · fast" : "Final · pro"}
+            </button>
+          ))}
+        </div>
+
+        <span
+          className="text-[11px] font-medium text-white/45"
+          title="Costo estimado del render (720p · 8s). 0.6× si incluyes un video de referencia."
+        >
+          ≈ ${estimateUgcCost(quality, counts.videos > 0).toFixed(2)}
+        </span>
 
         <div className="ml-auto flex items-center gap-2.5">
           <span className={`text-[11px] ${overLimit ? "font-semibold text-rose-300" : "text-white/40"}`}>
@@ -873,10 +1584,13 @@ function MultiRefComposer({
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={persona.avatarUrl} alt="" className="h-7 w-7 rounded-lg object-cover" />
           <span className="text-[12px] font-medium text-white/80">{persona.name}</span>
-          {(prompt.trim() || script.trim()) && (
-            <span className="max-w-[40%] truncate text-[11px] text-white/35">
-              {script.trim() || prompt.trim()}
+          {tpl && (
+            <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-white/60">
+              {tpl.label}
             </span>
+          )}
+          {spokenPreview.trim() && (
+            <span className="max-w-[40%] truncate text-[11px] text-white/35">{spokenPreview}</span>
           )}
           <button
             onClick={onGenerate}
@@ -966,18 +1680,17 @@ function CreateAvatarModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[60] grid place-items-center p-4">
+    // Root motion.div: ver nota en AvatarProjectModal (evita el modal zombie).
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[60] grid place-items-center p-4"
+    >
+      <div onClick={onClose} className="absolute inset-0 bg-ink/35 backdrop-blur-[3px]" />
       <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        onClick={onClose}
-        className="absolute inset-0 bg-ink/35 backdrop-blur-[3px]"
-      />
-      <motion.div
-        initial={{ opacity: 0, y: 20, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: 14, scale: 0.98 }}
+        initial={{ y: 20, scale: 0.98 }}
+        animate={{ y: 0, scale: 1 }}
         transition={{ type: "spring", stiffness: 320, damping: 30 }}
         className="relative w-full max-w-[540px] overflow-hidden rounded-3xl border border-line bg-canvas shadow-lift"
       >
@@ -1055,7 +1768,7 @@ function CreateAvatarModal({
           </button>
         </div>
       </motion.div>
-    </div>
+    </motion.div>
   );
 }
 

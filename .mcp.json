@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "orbita-studio": {
+      "command": "node",
+      "args": ["scripts/mcp-server.mjs"],
+      "env": {
+        "ORBITA_BASE": "http://localhost:3000"
+      }
+    }
+  }
+}

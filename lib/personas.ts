@@ -29,6 +29,7 @@ export interface Persona {
   sourceUrl?: string; // foto de referencia entregada
   identity: string; // descriptor textual
   voiceName: string; // voz pineada (Gemini TTS) — ancla de voz
+  elevenVoiceId?: string; // voz pineada (ElevenLabs) — ancla de voz si hay key
   language: string; // idioma de la voz
   seed: number; // seed de movimiento (Seedance) — reproducibilidad
   product?: string; // producto asociado
@@ -98,6 +99,7 @@ export async function createPersona(input: {
   product?: string;
   mode: string;
   voiceName?: string;
+  elevenVoiceId?: string;
   language?: string;
 }): Promise<Persona> {
   await ensureLoaded();
@@ -110,6 +112,7 @@ export async function createPersona(input: {
     sourceUrl: input.sourceUrl,
     identity: input.identity,
     voiceName: input.voiceName || VOICES[store.size % VOICES.length],
+    elevenVoiceId: input.elevenVoiceId,
     language: input.language || "es-ES",
     seed: Math.floor(Math.random() * 1_000_000),
     product: input.product,
