@@ -8,6 +8,8 @@ Hay una implementación acordada **pendiente de construir**: hacer el pipeline U
 
 **La spec completa y autocontenida está en [HANDOFF.md](HANDOFF.md).** Empieza por ahí: hacer un brainstorming corto de requisitos y luego TDD. Caso de validación: Video 1 "The Mirror / Your Prime Self".
 
+> **Preferencia del usuario:** trabajar directo sobre `main` (no crear rama).
+
 ## Mapa rápido del código
 
 - `lib/personas.ts` — roster de personas (avatar héroe = ancla de identidad, sheet, voz, seed). Persistente en Supabase.
