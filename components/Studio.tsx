@@ -68,16 +68,6 @@ interface TaggedMaterial {
 // Límites de Seedance 2.0 multi-referencia.
 const LIMITS = { image: 9, video: 3, audio: 3, total: 12 };
 
-// Expresiones rápidas — inyectan una directiva en el prompt ("manejar expresiones").
-const EXPRESSIONS: { key: string; label: string; text: string }[] = [
-  { key: "smiling", label: "Smiling", text: "warm, genuine smile" },
-  { key: "excited", label: "Excited", text: "excited, high-energy expression" },
-  { key: "surprised", label: "Surprised", text: "pleasantly surprised, wide eyes" },
-  { key: "serious", label: "Confident", text: "calm, confident, serious tone" },
-  { key: "laughing", label: "Laughing", text: "laughing naturally" },
-  { key: "curious", label: "Curious", text: "curious, thoughtful look" },
-];
-
 const DEFAULT_SCRIPT_HINT =
   "Shot on iPhone front camera, vertical 9:16, natural HDR, real skin tones, authentic UGC creator energy…";
 
@@ -107,15 +97,24 @@ const KIND_ICON: Record<RefKind, any> = { image: "image", video: "video", audio:
 const ACCEPT: Record<RefKind, string> = { image: "image/*", video: "video/*", audio: "audio/*" };
 
 // Numera los materiales en tags posicionales, igual que el backend:
-// @Image1 = avatar (fijo); @Audio1 = voz del guion (si speak); luego, en orden,
-// los materiales adicionales por tipo.
-function buildTags(avatarName: string, materials: Material[], voiceOn: boolean): TaggedMaterial[] {
+// @Image1 = keyframe aprobado o avatar (fijo); @Audio1 = voz del guion (si speak);
+// luego, en orden, los materiales adicionales por tipo.
+function buildTags(
+  avatarName: string,
+  materials: Material[],
+  voiceOn: boolean,
+  keyframeUrl?: string | null
+): TaggedMaterial[] {
   const items: TaggedMaterial[] = [];
   let img = 1;
   let vid = 1;
   let aud = 1;
 
-  items.push({ tag: `@Image${img++}`, kind: "image", label: `Avatar · ${avatarName}`, locked: true });
+  items.push(
+    keyframeUrl
+      ? { tag: `@Image${img++}`, kind: "image", label: "Keyframe · escena", url: keyframeUrl, locked: true }
+      : { tag: `@Image${img++}`, kind: "image", label: `Avatar · ${avatarName}`, locked: true }
+  );
   if (voiceOn) items.push({ tag: `@Audio${aud++}`, kind: "audio", label: "Voz del guion", locked: true });
 
   for (const m of materials) {
@@ -151,6 +150,9 @@ export default function Studio() {
   // "final" = Pro (máxima calidad). El modelo se manda como override por request.
   const [quality, setQuality] = useState<"draft" | "final">("final");
   const [materials, setMaterials] = useState<Material[]>([]);
+  // Keyframe aprobado (personaje YA compuesto en la escena). Si existe, sustituye
+  // al avatar como @Image1 del render — el still aprobado es el primer frame.
+  const [keyframeUrl, setKeyframeUrl] = useState<string | null>(null);
 
   // Generación de video
   const [videoStatus, setVideoStatus] = useState<VideoStatus>("idle");
@@ -175,9 +177,16 @@ export default function Studio() {
   const effectiveScript = activeTemplate ? assembledScript : script;
 
   const tags = useMemo(
-    () => (selected ? buildTags(selected.name, materials, speak && !!effectiveScript.trim()) : []),
-    [selected, materials, speak, effectiveScript]
+    () =>
+      selected
+        ? buildTags(selected.name, materials, speak && !!effectiveScript.trim(), keyframeUrl)
+        : [],
+    [selected, materials, speak, effectiveScript, keyframeUrl]
   );
+
+  // El keyframe es una composición persona+escena: al cambiar de avatar deja de
+  // ser válido, así que se descarta para no arrastrarlo a otra persona.
+  useEffect(() => setKeyframeUrl(null), [selectedId]);
 
   const counts = useMemo(() => {
     const images = 1 + materials.filter((m) => m.kind === "image").length; // +avatar
@@ -220,6 +229,7 @@ export default function Studio() {
     setSelectedId(p.id);
     setCreating(false);
     setMaterials([]);
+    setKeyframeUrl(null);
   }, []);
 
   const addMaterial = useCallback((m: Material) => setMaterials((prev) => [...prev, m]), []);
@@ -258,6 +268,8 @@ export default function Studio() {
           speak: activeTemplate ? true : speak,
           references,
           model,
+          // Keyframe aprobado → @Image1 en vez del avatar (still como primer frame).
+          heroImageUrl: keyframeUrl ?? undefined,
           templateId: activeTemplate?.id,
           templateValues: activeTemplate ? templateValues : undefined,
         }),
@@ -332,7 +344,7 @@ export default function Studio() {
       setVideoError(e?.message ?? "Error al generar.");
       setVideoStatus("failed");
     }
-  }, [selected, prompt, script, speak, quality, materials, videoStatus, overLimit, activeTemplate, templateValues]);
+  }, [selected, prompt, script, speak, quality, materials, keyframeUrl, videoStatus, overLimit, activeTemplate, templateValues]);
 
   return (
     <div className="mx-auto flex h-full max-w-[1200px] flex-col gap-4">
@@ -411,6 +423,8 @@ export default function Studio() {
           materials={materials}
           onAddMaterial={addMaterial}
           onRemoveMaterial={removeMaterial}
+          keyframeUrl={keyframeUrl}
+          onKeyframe={setKeyframeUrl}
           tags={tags}
           counts={counts}
           overLimit={overLimit}
@@ -1181,6 +1195,264 @@ function estimateUgcCost(quality: "draft" | "final", hasVideoInput: boolean): nu
 }
 
 // ---------------------------------------------------------------------------
+// Keyframe-first — compositor de personaje-en-escena (still aprobable).
+// Genera un draft con GPT Image (avatar + sheet); al aprobarlo, ese still pasa
+// a ser @Image1 del render de video (en vez del avatar héroe). El sheet NUNCA
+// llega a Seedance: solo el keyframe aprobado. Ver HANDOFF.md.
+// ---------------------------------------------------------------------------
+function KeyframePanel({
+  personaId,
+  keyframeUrl,
+  onKeyframe,
+}: {
+  personaId: string;
+  keyframeUrl: string | null;
+  onKeyframe: (url: string | null) => void;
+}) {
+  const [scene, setScene] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [draftUrl, setDraftUrl] = useState<string | null>(null);
+  const [mode, setMode] = useState<string>("");
+
+  async function generateKeyframe() {
+    if (!scene.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    setDraftUrl(null);
+    try {
+      const res = await fetch("/api/ugc/keyframe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ personaId, prompt: scene, aspect: "9:16" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? "No se pudo componer el keyframe.");
+      setDraftUrl(data.url);
+      setMode(data.mode ?? "");
+    } catch (e: any) {
+      setError(e?.message ?? "Error al componer el keyframe.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-2xl border border-white/10 bg-white/[0.04] p-2.5">
+      <div className="mb-2 flex items-center gap-2">
+        <Icon name="image" size={13} className="text-white/45" />
+        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-white/40">
+          Keyframe · personaje en escena
+        </span>
+        <span className="text-[10.5px] text-white/30">opcional · será @Image1</span>
+        {keyframeUrl && (
+          <span className="ml-auto flex items-center gap-1 rounded-md bg-emerald-400/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-200">
+            <Icon name="check" size={11} /> Activo
+          </span>
+        )}
+      </div>
+
+      {/* keyframe aprobado: es el primer frame del render */}
+      {keyframeUrl && (
+        <div className="mb-2 flex items-center gap-2.5 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={keyframeUrl} alt="keyframe" className="h-16 w-10 rounded-lg border border-white/10 object-cover" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[11.5px] font-semibold text-white/85">Keyframe aprobado</p>
+            <p className="text-[10.5px] text-white/40">El render partirá de este still como @Image1.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onKeyframe(null)}
+            className="shrink-0 rounded-lg bg-white/10 px-2 py-1 text-[10.5px] font-medium text-white/70 transition hover:bg-white/20 hover:text-white"
+          >
+            Quitar
+          </button>
+        </div>
+      )}
+
+      {/* describir escena + generar draft */}
+      <div className="flex items-center gap-2">
+        <input
+          value={scene}
+          onChange={(e) => setScene(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && generateKeyframe()}
+          disabled={busy}
+          placeholder="Escena del still — ej: hombre 45-50 frente a un espejo, su reflejo más atlético…"
+          className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.05] px-2.5 py-1.5 text-[12.5px] text-white outline-none placeholder:text-white/25 focus:border-white/30 disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={generateKeyframe}
+          disabled={!scene.trim() || busy}
+          className="flex shrink-0 items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 text-[12px] font-semibold text-white/85 transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-30"
+        >
+          <Icon name={busy ? "sparkle" : "image"} size={13} className={busy ? "animate-spin-slow" : ""} />
+          {busy ? "Componiendo…" : "Generar keyframe"}
+        </button>
+      </div>
+
+      {error && <p className="mt-1.5 text-[11px] text-rose-300">{error}</p>}
+
+      {/* draft propuesto: aprobar o descartar */}
+      {draftUrl && (
+        <div className="mt-2 flex items-center gap-2.5 rounded-xl border border-white/10 bg-ink/50 p-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={draftUrl} alt="keyframe draft" className="h-20 w-12 rounded-lg border border-white/10 object-cover" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[11.5px] font-semibold text-white/85">Propuesta de keyframe</p>
+            <p className="text-[10.5px] text-white/40">
+              {mode.startsWith("stub") ? "Stub (sin OPENAI_API_KEY)" : `Compuesto con ${mode}`}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              onKeyframe(draftUrl);
+              setDraftUrl(null);
+            }}
+            className="shrink-0 rounded-lg bg-emerald-500/85 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-emerald-500"
+          >
+            Usar este
+          </button>
+          <button
+            type="button"
+            onClick={() => setDraftUrl(null)}
+            className="shrink-0 rounded-lg bg-white/10 px-2 py-1 text-[11px] font-medium text-white/60 transition hover:bg-white/20 hover:text-white"
+          >
+            Descartar
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Popover compacto de la barra (estilo Higgsfield): cierra al hacer click fuera.
+function BarMenu({
+  trigger,
+  children,
+  title,
+  chevron = true,
+  align = "left",
+}: {
+  trigger: React.ReactNode;
+  children: (close: () => void) => React.ReactNode;
+  title?: string;
+  chevron?: boolean;
+  align?: "left" | "right";
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        title={title}
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1 rounded-lg bg-white/10 px-2.5 py-1.5 text-[11.5px] font-medium text-white/80 transition hover:bg-white/20"
+      >
+        {trigger}
+        {chevron && <Icon name="chevron" size={10} className="rotate-90 opacity-50" />}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div
+            className={`absolute bottom-full z-40 mb-1.5 min-w-[180px] rounded-xl border border-white/10 bg-ink/95 p-1 shadow-lift backdrop-blur ${
+              align === "right" ? "right-0" : "left-0"
+            }`}
+          >
+            {children(() => setOpen(false))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Ítem de un BarMenu (opción seleccionable con hint + check activo).
+function MenuItem({
+  active,
+  onClick,
+  label,
+  hint,
+}: {
+  active?: boolean;
+  onClick: () => void;
+  label: string;
+  hint?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-[12px] transition hover:bg-white/10 ${
+        active ? "bg-white/10 text-white" : "text-white/70"
+      }`}
+    >
+      <span className="font-medium">{label}</span>
+      <span className="flex items-center gap-1.5">
+        {hint && <span className="text-[10.5px] text-white/35">{hint}</span>}
+        {active && <Icon name="check" size={12} className="text-emerald-300" />}
+      </span>
+    </button>
+  );
+}
+
+// Slot cuadrado de asset (Producto / Avatar) — miniatura + etiqueta.
+function AttachSquare({
+  label,
+  thumb,
+  badge,
+  active,
+  disabled,
+  onClick,
+  title,
+}: {
+  label: string;
+  thumb?: string;
+  badge?: number;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`relative flex h-[68px] w-[68px] shrink-0 flex-col items-center justify-center gap-1 rounded-2xl border p-1.5 transition disabled:cursor-not-allowed disabled:opacity-40 ${
+        active
+          ? "border-emerald-400/40 bg-emerald-400/[0.06]"
+          : "border-white/12 bg-white/[0.04] hover:border-white/30"
+      }`}
+    >
+      {thumb ? (
+        /* eslint-disable-next-line @next/next/no-img-element */
+        <img src={thumb} alt={label} className="h-8 w-8 rounded-md object-cover" />
+      ) : (
+        <span className="grid h-8 w-8 place-items-center rounded-md bg-white/10 text-white/60">
+          <Icon name="plus" size={15} />
+        </span>
+      )}
+      <span className="text-[9px] font-semibold uppercase tracking-wide text-white/55">{label}</span>
+      {typeof badge === "number" && (
+        <span className="absolute right-1 top-1 grid h-4 min-w-[16px] place-items-center rounded-full bg-white px-1 text-[9px] font-bold text-ink">
+          {badge}
+        </span>
+      )}
+      {active && typeof badge !== "number" && (
+        <span className="absolute right-1 top-1 grid h-4 w-4 place-items-center rounded-full bg-emerald-400 text-white">
+          <Icon name="check" size={10} />
+        </span>
+      )}
+    </button>
+  );
+}
+
 function MultiRefComposer({
   persona,
   prompt,
@@ -1199,7 +1471,8 @@ function MultiRefComposer({
   materials,
   onAddMaterial,
   onRemoveMaterial,
-  tags,
+  keyframeUrl,
+  onKeyframe,
   counts,
   overLimit,
   status,
@@ -1222,13 +1495,15 @@ function MultiRefComposer({
   materials: Material[];
   onAddMaterial: (m: Material) => void;
   onRemoveMaterial: (id: string) => void;
+  keyframeUrl: string | null;
+  onKeyframe: (url: string | null) => void;
   tags: TaggedMaterial[];
   counts: { images: number; videos: number; audios: number; total: number };
   overLimit: boolean;
   status: VideoStatus;
   onGenerate: () => void;
 }) {
-  const [open, setOpen] = useState(true);
+  const [escenaOpen, setEscenaOpen] = useState(false);
   const [uploading, setUploading] = useState<RefKind | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileRefs = {
@@ -1259,29 +1534,9 @@ function MultiRefComposer({
     }
   }
 
-  // Inserta un tag en el prompt en la posición del cursor.
-  function insertTag(tag: string) {
-    const el = promptRef.current;
-    const caret = el?.selectionStart ?? prompt.length;
-    const next = `${prompt.slice(0, caret)}${tag} ${prompt.slice(caret)}`;
-    onPrompt(next);
-    requestAnimationFrame(() => {
-      el?.focus();
-      const pos = caret + tag.length + 1;
-      el?.setSelectionRange(pos, pos);
-    });
-  }
-
-  function applyExpression(text: string) {
-    const phrase = `${persona.name}'s facial expression: ${text}.`;
-    onPrompt(prompt.trim() ? `${prompt.trim()} ${phrase}` : phrase);
-  }
-
   const tpl = templateId === "libre" ? undefined : getUgcTemplate(templateId);
   const tplMissing = tpl ? missingRequiredFields(tpl, templateValues) : [];
   const tplReady = !!tpl && tplMissing.length === 0;
-  // Lo que dirá el avatar (para la barra colapsada y el preview).
-  const spokenPreview = tpl ? assembledScript : script.trim() || prompt.trim();
 
   const canGenerate =
     (tpl ? tplReady : !!script.trim() || !!prompt.trim()) && !overLimit && status !== "rendering";
@@ -1290,173 +1545,28 @@ function MultiRefComposer({
     onTemplateValues({ ...templateValues, [key]: value });
   }
 
+  const cost = estimateUgcCost(quality, counts.videos > 0);
+  const productImg = materials.find((m) => m.kind === "image");
+  const imgCount = materials.filter((m) => m.kind === "image").length;
+
   return (
     <div className="rounded-3xl border border-line bg-ink/[0.97] p-3 shadow-lift">
-      {/* header: colapsar / expandir el compositor */}
-      <div className="mb-2 flex items-center gap-2">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-white/40">Compositor</span>
-        {/* contador solo colapsado: expandido ya se ve junto a Generar */}
-        {!open && (
-          <span className="font-mono text-[10.5px] text-white/30">
-            {counts.images}img · {counts.videos}vid · {counts.audios}aud · {counts.total}/12
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          className="ml-auto flex items-center gap-1 rounded-lg bg-white/10 px-2 py-1 text-[11px] font-medium text-white/70 transition hover:bg-white/20 hover:text-white"
-        >
-          {open ? "Colapsar" : "Expandir"}
-          <Icon name="chevron" size={12} className={open ? "rotate-90" : "-rotate-90"} />
-        </button>
-      </div>
+      {/* ── Paneles desplegables (aparecen ARRIBA de la barra) ─────────── */}
 
-      <div className={open ? "" : "hidden"}>
-      {/* formato Meta Ads: libre o template guiado */}
-      <div className="mb-2 flex flex-wrap items-center gap-1.5">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-white/35">Formato</span>
-        <button
-          type="button"
-          onClick={() => onTemplateId("libre")}
-          className={`rounded-lg px-2.5 py-1 text-[11.5px] font-medium transition ${
-            !tpl ? "bg-white text-ink" : "bg-white/10 text-white/70 hover:bg-white/20"
-          }`}
-          title="Compositor manual: prompt + guion libres"
-        >
-          Libre
-        </button>
-        {UGC_TEMPLATES.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => onTemplateId(t.id)}
-            className={`rounded-lg px-2.5 py-1 text-[11.5px] font-medium transition ${
-              tpl?.id === t.id ? "bg-white text-ink" : "bg-white/10 text-white/70 hover:bg-white/20"
-            }`}
-            title={t.why}
-          >
-            {t.label}
-            <span className={`ml-1.5 text-[10px] ${tpl?.id === t.id ? "text-ink/60" : "text-white/40"}`}>
-              {t.tagline}
-            </span>
-          </button>
-        ))}
-      </div>
-
-      {/* bandeja de materiales con tags */}
-      <div className="mb-2 flex flex-wrap items-center gap-1.5">
-        {tags.map((t) => (
-          <span
-            key={t.tag}
-            className="group flex items-center gap-1.5 rounded-lg bg-white/10 py-1 pl-1 pr-2 text-[11.5px] font-medium text-white/85"
-            title={t.label}
-          >
-            {t.url ? (
-              t.kind === "image" ? (
-                /* eslint-disable-next-line @next/next/no-img-element */
-                <img src={t.url} alt="" className="h-6 w-6 rounded object-cover" />
-              ) : (
-                <span className="grid h-6 w-6 place-items-center rounded bg-white/10">
-                  <Icon name={KIND_ICON[t.kind]} size={13} />
-                </span>
-              )
-            ) : t.locked && t.kind === "image" ? (
-              /* eslint-disable-next-line @next/next/no-img-element */
-              <img src={persona.avatarUrl} alt="" className="h-6 w-6 rounded object-cover" />
-            ) : (
-              <span className="grid h-6 w-6 place-items-center rounded bg-white/10">
-                <Icon name={KIND_ICON[t.kind]} size={13} />
-              </span>
-            )}
+      {/* plantilla guiada (formato Meta Ads) */}
+      {tpl && (
+        <div className="mb-2 rounded-2xl border border-white/10 bg-white/[0.04] p-2.5">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-[11px] font-semibold text-white/75">{tpl.label}</span>
             <button
               type="button"
-              onClick={() => insertTag(t.tag)}
-              className="font-mono text-[10.5px] text-white/70 hover:text-white"
-              title={`Insertar ${t.tag} en el prompt`}
+              onClick={() => onTemplateId("libre")}
+              className="rounded-lg bg-white/10 px-2 py-0.5 text-[10.5px] font-medium text-white/60 transition hover:bg-white/20 hover:text-white"
             >
-              {t.tag}
-            </button>
-            <span className="max-w-[120px] truncate text-white/55">{t.label}</span>
-            {!t.locked && t.materialId && (
-              <button
-                type="button"
-                onClick={() => onRemoveMaterial(t.materialId!)}
-                className="ml-0.5 text-white/40 transition hover:text-white"
-                aria-label="Quitar material"
-              >
-                <Icon name="close" size={12} />
-              </button>
-            )}
-          </span>
-        ))}
-
-        {/* añadir material */}
-        {(["image", "video", "audio"] as RefKind[]).map((kind) => (
-          <button
-            key={kind}
-            type="button"
-            disabled={atCap(kind) || uploading !== null}
-            onClick={() => fileRefs[kind].current?.click()}
-            className="flex items-center gap-1 rounded-lg border border-dashed border-white/25 px-2 py-1 text-[11px] font-medium text-white/60 transition hover:border-white/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
-            title={atCap(kind) ? "Límite alcanzado" : `Añadir ${kind}`}
-          >
-            <Icon name={uploading === kind ? "sparkle" : "plus"} size={12} className={uploading === kind ? "animate-spin-slow" : ""} />
-            {kind === "image" ? "Imagen" : kind === "video" ? "Video" : "Audio"}
-          </button>
-        ))}
-        {(["image", "video", "audio"] as RefKind[]).map((kind) => (
-          <input
-            key={kind}
-            ref={fileRefs[kind]}
-            type="file"
-            accept={ACCEPT[kind]}
-            className="hidden"
-            onChange={(e) => {
-              handleFile(kind, e.target.files?.[0] ?? null);
-              e.target.value = "";
-            }}
-          />
-        ))}
-      </div>
-
-      {uploadError && <p className="mb-2 px-1 text-[11px] text-rose-300">{uploadError}</p>}
-
-      {!tpl ? (
-        /* prompt libre con menciones @ */
-        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-1">
-          <textarea
-            ref={promptRef}
-            value={prompt}
-            onChange={(e) => onPrompt(e.target.value)}
-            rows={2}
-            placeholder={`Prompt de la escena — escribe @ para insertar referencias (${DEFAULT_SCRIPT_HINT})`}
-            className="w-full resize-none bg-transparent px-2 py-1.5 text-[13.5px] text-white outline-none placeholder:text-white/35"
-          />
-          {/* guion hablado */}
-          <div className="flex items-center gap-2 border-t border-white/10 px-1.5 pt-1.5">
-            <Icon name="mic" size={14} className="shrink-0 text-white/45" />
-            <input
-              value={script}
-              onChange={(e) => onScript(e.target.value)}
-              placeholder={`Guion que dirá ${persona.name}… (voz ${persona.voiceName}, ${persona.language})`}
-              className="min-w-0 flex-1 bg-transparent py-0.5 text-[13px] text-white outline-none placeholder:text-white/30"
-            />
-            <button
-              type="button"
-              onClick={() => onSpeak(!speak)}
-              className={`flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[10.5px] font-semibold transition ${
-                speak ? "bg-white/15 text-white" : "bg-white/5 text-white/40"
-              }`}
-              title="Generar voz a partir del guion (→ @Audio1)"
-            >
-              <Icon name={speak ? "check" : "close"} size={11} /> Voz
+              Quitar plantilla
             </button>
           </div>
-        </div>
-      ) : (
-        /* campos guiados del template */
-        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-2.5">
-          <p className="mb-2 text-[11.5px] leading-snug text-white/45">{tpl.why}</p>
+          <p className="mb-2 text-[11px] leading-snug text-white/45">{tpl.why}</p>
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
             {tpl.fields.map((f) => (
               <label key={f.key} className={f.kind === "long" ? "md:col-span-2" : ""}>
@@ -1483,23 +1593,11 @@ function MultiRefComposer({
               </label>
             ))}
           </div>
-
-          {/* hint de producto (@Image2) + tips del formato */}
-          {tpl.needsProductRef && counts.images < 2 && (
+          {tpl.needsProductRef && imgCount < 1 && (
             <p className="mt-2 rounded-lg bg-amber-400/10 px-2 py-1 text-[11px] text-amber-200">
-              Tip: sube una foto del producto (botón “+ Imagen”) — será <span className="font-mono">@Image2</span> y
-              Seedance lo replicará exacto.
+              Tip: añade la foto del producto en el slot PRODUCTO — será @Image2.
             </p>
           )}
-          {!!tpl.notes?.length && (
-            <ul className="mt-2 space-y-0.5">
-              {tpl.notes.map((n, i) => (
-                <li key={i} className="text-[11px] text-white/35">· {n}</li>
-              ))}
-            </ul>
-          )}
-
-          {/* preview del guion que se voicea */}
           <div className="mt-2 rounded-xl border border-white/10 bg-ink/60 px-2.5 py-2">
             <span className="text-[10px] font-semibold uppercase tracking-wide text-white/35">
               {persona.name} dirá (voz {persona.voiceName})
@@ -1511,102 +1609,215 @@ function MultiRefComposer({
         </div>
       )}
 
-      {/* expresiones (solo modo libre; el template define la energía) */}
-      {!tpl && (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-[10.5px] font-semibold uppercase tracking-wide text-white/35">Expresión</span>
-          {EXPRESSIONS.map((ex) => (
-            <button
-              key={ex.key}
-              type="button"
-              onClick={() => applyExpression(ex.text)}
-              className="rounded-lg bg-white/8 px-2 py-1 text-[11px] font-medium text-white/65 transition hover:bg-white/20 hover:text-white"
-              title={ex.text}
+      {/* keyframe (personaje en escena) — se abre desde el slot AVATAR */}
+      {!tpl && escenaOpen && (
+        <KeyframePanel personaId={persona.id} keyframeUrl={keyframeUrl} onKeyframe={onKeyframe} />
+      )}
+
+      {/* materiales adjuntos (chips removibles) */}
+      {materials.length > 0 && (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          {materials.map((m) => (
+            <span
+              key={m.id}
+              className="flex items-center gap-1.5 rounded-lg bg-white/10 py-1 pl-1 pr-1.5 text-[11px] font-medium text-white/80"
+              title={m.name}
             >
-              {ex.label}
-            </button>
+              {m.kind === "image" ? (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img src={m.url} alt="" className="h-6 w-6 rounded object-cover" />
+              ) : (
+                <span className="grid h-6 w-6 place-items-center rounded bg-white/10">
+                  <Icon name={KIND_ICON[m.kind]} size={13} />
+                </span>
+              )}
+              <span className="max-w-[110px] truncate text-white/55">{m.name}</span>
+              <button
+                type="button"
+                onClick={() => onRemoveMaterial(m.id)}
+                className="text-white/40 transition hover:text-white"
+                aria-label="Quitar material"
+              >
+                <Icon name="close" size={12} />
+              </button>
+            </span>
           ))}
         </div>
       )}
 
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        {/* calidad/costo: draft = Seedance Fast (barato, para iterar) · final = Pro */}
-        <div
-          className="flex items-center gap-0.5 rounded-lg bg-white/5 p-0.5"
-          title="Draft = Seedance Fast (más barato, para iterar) · Final = Pro (máxima calidad)"
-        >
-          {(["draft", "final"] as const).map((q) => (
-            <button
-              key={q}
-              type="button"
-              onClick={() => onQuality(q)}
-              className={`rounded-md px-2 py-1 text-[11px] font-medium transition ${
-                quality === q ? "bg-white text-ink" : "text-white/55 hover:text-white"
-              }`}
+      {uploadError && <p className="mb-2 px-1 text-[11px] text-rose-300">{uploadError}</p>}
+
+      {/* ── La barra (estilo Higgsfield): prompt protagonista + slots + generar ── */}
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+        {/* zona de prompt */}
+        <div className="flex min-w-0 flex-1 flex-col rounded-2xl border border-white/10 bg-white/[0.04] p-2">
+          <div className="flex items-start gap-1">
+            <BarMenu chevron={false} title="Adjuntar referencia" trigger={<Icon name="plus" size={15} />}>
+              {(close) =>
+                (["image", "video", "audio"] as RefKind[]).map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    disabled={atCap(kind) || uploading !== null}
+                    onClick={() => {
+                      fileRefs[kind].current?.click();
+                      close();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] font-medium text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-30"
+                  >
+                    <Icon name={KIND_ICON[kind]} size={14} className="text-white/50" />
+                    {kind === "image" ? "Imagen" : kind === "video" ? "Video" : "Audio"}
+                  </button>
+                ))
+              }
+            </BarMenu>
+
+            {!tpl ? (
+              <textarea
+                ref={promptRef}
+                value={prompt}
+                onChange={(e) => onPrompt(e.target.value)}
+                rows={2}
+                placeholder="Describe qué pasa en el anuncio…"
+                className="min-h-[46px] w-full resize-none bg-transparent px-1 py-1.5 text-[14px] text-white outline-none placeholder:text-white/35"
+              />
+            ) : (
+              <div className="flex-1 px-1 py-2 text-[13px] text-white/55">
+                Plantilla <b className="text-white/80">{tpl.label}</b> activa — edita los campos de arriba.
+              </div>
+            )}
+          </div>
+
+          {!tpl && (
+            <div className="mt-1 flex items-center gap-2 border-t border-white/10 px-1 pt-1.5">
+              <Icon name="mic" size={14} className="shrink-0 text-white/45" />
+              <input
+                value={script}
+                onChange={(e) => onScript(e.target.value)}
+                placeholder={`Guion que dirá ${persona.name}… (opcional)`}
+                className="min-w-0 flex-1 bg-transparent py-0.5 text-[12.5px] text-white outline-none placeholder:text-white/30"
+              />
+            </div>
+          )}
+
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 px-0.5">
+            <BarMenu
+              title="Formato del anuncio"
+              trigger={
+                <>
+                  <Icon name="sparkle" size={12} className="text-white/55" />
+                  {tpl ? tpl.label : "Libre"}
+                </>
+              }
             >
-              {q === "draft" ? "Draft · fast" : "Final · pro"}
-            </button>
-          ))}
+              {(close) => (
+                <>
+                  <MenuItem active={!tpl} onClick={() => { onTemplateId("libre"); close(); }} label="Libre" hint="Prompt manual" />
+                  {UGC_TEMPLATES.map((t) => (
+                    <MenuItem
+                      key={t.id}
+                      active={tpl?.id === t.id}
+                      onClick={() => { onTemplateId(t.id); close(); }}
+                      label={t.label}
+                      hint={t.tagline}
+                    />
+                  ))}
+                </>
+              )}
+            </BarMenu>
+
+            <BarMenu
+              title="Calidad / costo del render"
+              trigger={
+                <>
+                  <Icon name="video" size={12} className="text-white/55" />
+                  {quality === "final" ? "Final" : "Draft"}
+                </>
+              }
+            >
+              {(close) => (
+                <>
+                  <MenuItem active={quality === "draft"} onClick={() => { onQuality("draft"); close(); }} label="Draft · fast" hint="Barato, para iterar" />
+                  <MenuItem active={quality === "final"} onClick={() => { onQuality("final"); close(); }} label="Final · pro" hint="Máxima calidad" />
+                </>
+              )}
+            </BarMenu>
+
+            {!tpl && (
+              <button
+                type="button"
+                onClick={() => onSpeak(!speak)}
+                title="Generar voz a partir del guion (→ @Audio1)"
+                className={`flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11.5px] font-medium transition ${
+                  speak ? "bg-white/15 text-white" : "bg-white/5 text-white/40 hover:bg-white/10"
+                }`}
+              >
+                <Icon name="mic" size={12} /> Voz
+              </button>
+            )}
+
+            {overLimit && (
+              <span className="text-[11px] font-semibold text-rose-300">Máx 12 materiales</span>
+            )}
+          </div>
         </div>
 
-        <span
-          className="text-[11px] font-medium text-white/45"
-          title="Costo estimado del render (720p · 8s). 0.6× si incluyes un video de referencia."
-        >
-          ≈ ${estimateUgcCost(quality, counts.videos > 0).toFixed(2)}
-        </span>
+        {/* slots de asset + generar (altura fija, compactos) */}
+        <div className="flex items-center gap-2">
+          {/* slot PRODUCTO */}
+          <AttachSquare
+            label="Producto"
+            thumb={productImg?.url}
+            badge={imgCount > 1 ? imgCount : undefined}
+            disabled={atCap("image") || uploading !== null}
+            onClick={() => fileRefs.image.current?.click()}
+            title="Sube una foto del producto (→ @Image2)"
+          />
 
-        <div className="ml-auto flex items-center gap-2.5">
-          <span className={`text-[11px] ${overLimit ? "font-semibold text-rose-300" : "text-white/40"}`}>
-            {counts.images}/9 img · {counts.videos}/3 vid · {counts.audios}/3 aud · {counts.total}/12
-          </span>
+          {/* slot AVATAR / KEYFRAME */}
+          <AttachSquare
+            label={keyframeUrl ? "Keyframe" : "Avatar"}
+            thumb={keyframeUrl || persona.avatarUrl}
+            active={!!keyframeUrl || escenaOpen}
+            disabled={!!tpl}
+            onClick={() => setEscenaOpen((o) => !o)}
+            title={tpl ? "El keyframe solo está disponible en modo Libre" : "Componer al personaje en la escena (keyframe → @Image1)"}
+          />
 
+          {/* GENERAR */}
           <button
             onClick={onGenerate}
             disabled={!canGenerate}
-            className="flex items-center gap-1.5 rounded-xl px-4 py-2 text-[13.5px] font-semibold text-white shadow-soft transition disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex h-[68px] min-w-[112px] flex-1 flex-col items-center justify-center gap-0.5 rounded-2xl px-5 text-white shadow-soft transition disabled:cursor-not-allowed disabled:opacity-40 lg:flex-none"
             style={{ background: "linear-gradient(135deg,#ec4899,#8b5cf6)" }}
           >
-            {status === "rendering" ? "Generando…" : "Generar"}
-            <Icon
-              name={status === "rendering" ? "sparkle" : "video"}
-              size={15}
-              className={status === "rendering" ? "animate-spin-slow" : ""}
-            />
+            <span className="flex items-center gap-1.5 text-[14px] font-bold">
+              {status === "rendering" ? "Generando…" : "Generar"}
+              <Icon
+                name={status === "rendering" ? "sparkle" : "rocket"}
+                size={15}
+                className={status === "rendering" ? "animate-spin-slow" : ""}
+              />
+            </span>
+            <span className="text-[11px] font-medium text-white/80">≈ ${cost.toFixed(2)}</span>
           </button>
         </div>
       </div>
-      </div>{/* /cuerpo expandido */}
 
-      {/* barra slim cuando el compositor está colapsado */}
-      {!open && (
-        <div className="flex items-center gap-2">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={persona.avatarUrl} alt="" className="h-7 w-7 rounded-lg object-cover" />
-          <span className="text-[12px] font-medium text-white/80">{persona.name}</span>
-          {tpl && (
-            <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-white/60">
-              {tpl.label}
-            </span>
-          )}
-          {spokenPreview.trim() && (
-            <span className="max-w-[40%] truncate text-[11px] text-white/35">{spokenPreview}</span>
-          )}
-          <button
-            onClick={onGenerate}
-            disabled={!canGenerate}
-            className="ml-auto flex items-center gap-1.5 rounded-xl px-4 py-2 text-[13px] font-semibold text-white shadow-soft transition disabled:cursor-not-allowed disabled:opacity-40"
-            style={{ background: "linear-gradient(135deg,#ec4899,#8b5cf6)" }}
-          >
-            {status === "rendering" ? "Generando…" : "Generar"}
-            <Icon
-              name={status === "rendering" ? "sparkle" : "video"}
-              size={14}
-              className={status === "rendering" ? "animate-spin-slow" : ""}
-            />
-          </button>
-        </div>
-      )}
+      {/* file inputs ocultos */}
+      {(["image", "video", "audio"] as RefKind[]).map((kind) => (
+        <input
+          key={kind}
+          ref={fileRefs[kind]}
+          type="file"
+          accept={ACCEPT[kind]}
+          className="hidden"
+          onChange={(e) => {
+            handleFile(kind, e.target.files?.[0] ?? null);
+            e.target.value = "";
+          }}
+        />
+      ))}
     </div>
   );
 }

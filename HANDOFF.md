@@ -1,7 +1,18 @@
 # HANDOFF — Pipeline UGC "keyframe-first" (robustez de identidad/escena)
 
-> **Estado:** propuesta de diseño acordada el 2026-06-16. **Aún NO implementado** — esto es la spec para retomar y construir desde casa.
-> **Si abres una sesión y no sabes qué hacer: este es el trabajo pendiente.** Antes de tocar código, haz un brainstorming corto para fijar requisitos y luego TDD.
+> **Estado:** ✅ IMPLEMENTADO el 2026-06-16 (etapas 1-4). La etapa opcional #5
+> (keyframes persistidos en el motor de producciones multi-shot) sigue pendiente.
+> Build + typecheck OK, 7 tests verdes (`npm test`), UI verificada en el Studio.
+>
+> **Qué se construyó:**
+> - `editImage()` ahora acepta **multi-imagen** (`image[]`) — avatar + sheet. Ver [lib/avatar.ts](lib/avatar.ts).
+> - `composeCharacterInScene()` compone el still y lo persiste en `keyframes/`. Ver [lib/keyframe.ts](lib/keyframe.ts).
+> - Endpoint [app/api/ugc/keyframe/route.ts](app/api/ugc/keyframe/route.ts).
+> - `/api/ugc` acepta `heroImageUrl` → el keyframe aprobado entra como **@Image1** (el sheet NUNCA va a Seedance). Ver [app/api/ugc/route.ts:98](app/api/ugc/route.ts).
+> - UI: panel "Keyframe · personaje en escena" en el compositor (`KeyframePanel` en [components/Studio.tsx](components/Studio.tsx)).
+> - Tests: [test/ugc-keyframe.test.ts](test/ugc-keyframe.test.ts) (form multi-imagen + regla anti-collage).
+>
+> El texto de abajo es la spec original (se conserva como referencia de diseño).
 
 ---
 

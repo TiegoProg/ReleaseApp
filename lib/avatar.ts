@@ -21,7 +21,9 @@ export interface AvatarAssets {
 }
 
 // Sube un b64 a Supabase Storage; si no hay storage, usa data-URL.
-async function storeImage(b64: string, folder: string): Promise<string | null> {
+// Exportado: el compositor de keyframes (lib/keyframe.ts) reutiliza el MISMO
+// almacenamiento que avatars/sheets — una sola fuente de verdad de Storage.
+export async function storeImage(b64: string, folder: string): Promise<string | null> {
   const sb = getServerSupabase();
   if (!sb) return null;
   try {
@@ -106,18 +108,34 @@ function supportsFidelity(model: string): boolean {
   return model === "gpt-image-1";
 }
 
-// Llama a /edits con una imagen de referencia (preserva la identidad del rostro).
-async function editImage(
-  refUrl: string,
+// Llama a /edits con UNA O VARIAS imágenes de referencia (preserva la identidad
+// del rostro). El endpoint /v1/images/edits de OpenAI acepta varias imágenes
+// como `image[]` en el form (gpt-image-1): la PRIMERA es el ancla maestra; las
+// siguientes enriquecen la composición (p.ej. avatar héroe + character sheet).
+//
+// Descarga defensiva: si una referencia secundaria no se puede bajar, se omite
+// y se sigue con las demás. Solo la primera (el ancla) es obligatoria.
+export async function editImage(
+  refUrls: string[],
   prompt: string,
   size: string,
   model: string,
   apiKey: string
 ): Promise<string | null> {
-  const imgRes = await fetch(refUrl);
-  if (!imgRes.ok) throw new Error(`No se pudo descargar la referencia (${imgRes.status}).`);
-  const buf = Buffer.from(await imgRes.arrayBuffer());
-  const contentType = imgRes.headers.get("content-type") || "image/png";
+  const urls = refUrls.filter(Boolean);
+  if (!urls.length) throw new Error("editImage necesita al menos una referencia.");
+
+  const blobs: Blob[] = [];
+  for (let i = 0; i < urls.length; i++) {
+    const imgRes = await fetch(urls[i]);
+    if (!imgRes.ok) {
+      if (i === 0) throw new Error(`No se pudo descargar la referencia (${imgRes.status}).`);
+      continue; // referencias secundarias son opcionales
+    }
+    const buf = Buffer.from(await imgRes.arrayBuffer());
+    const contentType = imgRes.headers.get("content-type") || "image/png";
+    blobs.push(new Blob([buf], { type: contentType }));
+  }
 
   const form = new FormData();
   form.append("model", model);
@@ -125,7 +143,9 @@ async function editImage(
   form.append("size", size);
   form.append("n", "1");
   if (supportsFidelity(model)) form.append("input_fidelity", "high"); // solo gpt-image-1
-  form.append("image", new Blob([buf], { type: contentType }), "reference.png");
+  // `image[]` para multi-referencia; `image` (compat) cuando solo hay una.
+  const field = blobs.length > 1 ? "image[]" : "image";
+  blobs.forEach((blob, idx) => form.append(field, blob, `reference-${idx}.png`));
 
   const res = await fetch(OPENAI_EDIT, {
     method: "POST",
@@ -174,7 +194,7 @@ export async function generateAvatarAssets(input: {
     let heroB64: string | null = null;
     if (input.sourceImageUrl) {
       try {
-        heroB64 = await editImage(input.sourceImageUrl, avatarPrompt, "1024x1536", model, apiKey);
+        heroB64 = await editImage([input.sourceImageUrl], avatarPrompt, "1024x1536", model, apiKey);
         mode = `${model}+ref`;
       } catch {
         heroB64 = null; // cae a generación normal
@@ -192,7 +212,7 @@ export async function generateAvatarAssets(input: {
       const heroRef = avatarUrl.startsWith("http") ? avatarUrl : input.sourceImageUrl;
       if (heroRef) {
         try {
-          sheetB64 = await editImage(heroRef, buildSheetPrompt(), "1536x1024", model, apiKey);
+          sheetB64 = await editImage([heroRef], buildSheetPrompt(), "1536x1024", model, apiKey);
         } catch (e: any) {
           console.error("[avatar] sheet /edits falló, fallback a prompt:", e?.message);
         }

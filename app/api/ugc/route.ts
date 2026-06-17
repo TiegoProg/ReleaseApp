@@ -20,6 +20,10 @@ const Body = z.object({
   prompt: z.string().optional().default(""), // prompt libre con tags @Image1/@Video1/@Audio1…
   script: z.string().optional().default(""), // lo que dice el avatar (→ voz @Audio1)
   speak: z.boolean().optional().default(true), // generar voz a partir del guion
+  // Keyframe aprobado (personaje YA compuesto en la escena). Si viene, REEMPLAZA
+  // al avatar héroe como @Image1 — el modelo de video parte del still aprobado
+  // en vez de improvisar vestuario/edad/entorno. Nunca se pasa el character sheet.
+  heroImageUrl: z.string().url().optional(),
   motionPreset: z.string().optional(),
   references: z.array(RefSchema).optional().default([]),
   model: z.string().optional(), // override puntual del modelo Seedance (p.ej. pro)
@@ -94,8 +98,10 @@ export async function POST(req: NextRequest) {
     voiceUrl = voice.audioUrl;
   }
 
-  // 2) Arma los arrays finales. @Image1 = avatar; @Audio1 = voz (si hay).
-  const images = [persona.avatarUrl, ...refImages];
+  // 2) Arma los arrays finales. @Image1 = keyframe aprobado (si hay) o avatar;
+  //    @Audio1 = voz (si hay).
+  const heroImage = parsed.heroImageUrl || persona.avatarUrl;
+  const images = [heroImage, ...refImages];
   const videos = refVideos;
   const audios = [...(voiceUrl ? [voiceUrl] : []), ...refAudios];
 

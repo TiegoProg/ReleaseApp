@@ -2,11 +2,18 @@
 
 Orbita es una agencia de marketing agéntica (Next.js 14). El módulo central es el **UGC Studio**: avatares/personas persistentes, generación de imagen con GPT Image y video con Seedance 2.0 (reference-to-video) vía fal.
 
-## 👉 Trabajo pendiente / Próximos pasos (léelo si el usuario pregunta "¿qué hago?")
+## 👉 Estado / Próximos pasos (léelo si el usuario pregunta "¿qué hago?")
 
-Hay una implementación acordada **pendiente de construir**: hacer el pipeline UGC más robusto con un paso **"keyframe-first"** (componer al personaje en la escena como imagen fija con GPT Image —usando avatar **+** sheet— y aprobarla antes de animar con Seedance).
+El pipeline **"keyframe-first"** ya está IMPLEMENTADO (etapas 1-4, ver [HANDOFF.md](HANDOFF.md)):
+componer al personaje en la escena como imagen fija con GPT Image (avatar **+** sheet),
+aprobarla en el compositor y enviarla como `@Image1` del render (el sheet nunca va a Seedance).
+Validación end-to-end pendiente: Video 1 "The Mirror / Your Prime Self".
 
-**La spec completa y autocontenida está en [HANDOFF.md](HANDOFF.md).** Empieza por ahí: hacer un brainstorming corto de requisitos y luego TDD. Caso de validación: Video 1 "The Mirror / Your Prime Self".
+**Lo único pendiente (opcional):** etapa #5 — keyframes persistidos por producción en el
+motor multi-shot ([lib/productions.ts](lib/productions.ts)), que hoy sigue usando el avatar como `@Image1`.
+
+Archivos clave del keyframe: [lib/keyframe.ts](lib/keyframe.ts), [app/api/ugc/keyframe/route.ts](app/api/ugc/keyframe/route.ts),
+`KeyframePanel` en [components/Studio.tsx](components/Studio.tsx). Tests: `npm test`.
 
 > **Preferencia del usuario:** trabajar directo sobre `main` (no crear rama).
 
