@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { type NodeProps } from "@xyflow/react";
 import { usePipelineStore, type PipelineNode } from "@/lib/pipelineStore";
 import { NodeShell, RunButton } from "./NodeShell";
 
@@ -108,6 +108,7 @@ export function VideoNode({ id, data, selected }: NodeProps<PipelineNode>) {
 
   return (
     <NodeShell
+      kind="video"
       name={data.label}
       placeholder="Video"
       onRename={(v) => updateNodeData(id, { label: v })}
@@ -117,9 +118,6 @@ export function VideoNode({ id, data, selected }: NodeProps<PipelineNode>) {
       status={status}
       selected={selected}
     >
-      <Handle id="images" type="target" position={Position.Left} className="!h-3 !w-3 !border-2 !border-white !bg-area-creative" />
-      <Handle id="prompt" type="target" position={Position.Top} className="!h-3 !w-3 !border-2 !border-white !bg-area-content" />
-
       {/* referencias ordenadas (@Image1..N) */}
       <div className="space-y-1">
         <span className="block text-[10px] font-semibold uppercase tracking-wide text-ink-mute">
@@ -184,16 +182,14 @@ export function VideoNode({ id, data, selected }: NodeProps<PipelineNode>) {
       )}
 
       {videoUrl ? (
-        <video src={videoUrl} controls className="w-full rounded-lg border border-line" />
+        <video src={videoUrl} controls className="min-h-0 w-full flex-1 rounded-lg border border-line object-contain" />
       ) : status === "running" ? (
-        <div className="grid h-24 place-items-center rounded-lg border border-dashed border-line text-[11px] text-ink-mute">
+        <div className="grid min-h-[5rem] flex-1 place-items-center rounded-lg border border-dashed border-line text-[11px] text-ink-mute">
           renderizando…
         </div>
       ) : null}
 
       {data.error && <p className="text-[10.5px] text-red-600">{data.error}</p>}
-
-      <Handle type="source" position={Position.Bottom} className="!h-3 !w-3 !border-2 !border-white !bg-area-creative" />
     </NodeShell>
   );
 }

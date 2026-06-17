@@ -55,6 +55,7 @@ function Canvas() {
   const onEdgesChange = usePipelineStore((s) => s.onEdgesChange);
   const onConnect = usePipelineStore((s) => s.onConnect);
   const addNode = usePipelineStore((s) => s.addNode);
+  const removeEdge = usePipelineStore((s) => s.removeEdge);
 
   const { screenToFlowPosition } = useReactFlow();
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -119,7 +120,7 @@ function Canvas() {
       <div className="pointer-events-none absolute left-5 top-4 z-10 flex items-center gap-2.5">
         <span className="label-mono">Pipeline UGC</span>
         <span className="hidden text-[12px] text-ink-mute sm:block">
-          clic derecho para agregar · arrastra desde un conector y suéltalo en vacío para conectar uno nuevo
+          clic derecho para agregar · arrastra desde un conector para conectar · clic en una conexión para borrarla
         </span>
       </div>
 
@@ -132,6 +133,7 @@ function Canvas() {
         onConnect={onConnect}
         onConnectStart={onConnectStart}
         onConnectEnd={onConnectEnd}
+        onEdgeClick={(_, edge) => removeEdge(edge.id)}
         onPaneContextMenu={onPaneContextMenu}
         onPaneClick={() => setMenu(null)}
         isValidConnection={isValidConnection}

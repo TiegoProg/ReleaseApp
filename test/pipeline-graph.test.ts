@@ -186,6 +186,23 @@ describe("canConnect — puertos tipados (asset/video)", () => {
   });
 });
 
+describe("canConnect — handles multi-lado (portId__side)", () => {
+  const nodes: GraphNode[] = [
+    { id: "p", type: "project", data: { output: { text: "c" } } },
+    { id: "a", type: "promptAgent", data: {} },
+  ];
+
+  it("targetHandle 'in__left' mapea al puerto 'in'", () => {
+    expect(canConnect({ source: "p", target: "a", targetHandle: "in__left" }, nodes, [])).toBe(true);
+  });
+
+  it("la capacidad del puerto se cuenta entre lados (un solo 'in')", () => {
+    const edges: GraphEdge[] = [{ source: "p", target: "a", targetHandle: "in__top" }];
+    const more: GraphNode[] = [...nodes, { id: "p2", type: "project", data: { output: { text: "c2" } } }];
+    expect(canConnect({ source: "p2", target: "a", targetHandle: "in__left" }, more, edges)).toBe(false);
+  });
+});
+
 describe("collectInputs por handle", () => {
   it("filtra por targetHandle cuando se indica", () => {
     const nodes: GraphNode[] = [

@@ -97,7 +97,7 @@ export function collectInputs(
 
   for (const edge of edges) {
     if (edge.target !== nodeId) continue;
-    if (handleId && edge.targetHandle !== handleId) continue;
+    if (handleId && basePortId(edge.targetHandle) !== handleId) continue;
     const from = byId.get(edge.source);
     if (!from) continue;
     if (hasOutput(from.data.output)) {
@@ -147,9 +147,19 @@ export function reconcileImageOrder(prev: string[], connected: string[]): string
   return [...kept, ...added];
 }
 
-/** El handle al que apunta una arista: su targetHandle, o el primer puerto si no tiene. */
+/**
+ * Id de puerto base a partir de un handle. Un puerto puede exponerse en varios
+ * lados con ids "<portId>__<lado>" (p.ej. "in__top", "in__left"); todos mapean
+ * al mismo puerto lógico "in".
+ */
+export function basePortId(handleId?: string | null): string | undefined {
+  if (!handleId) return undefined;
+  return handleId.split("__")[0];
+}
+
+/** El handle al que apunta una arista: su puerto base, o el primer puerto si no tiene. */
 function edgePortId(edge: GraphEdge, targetSpec: NodeSpec): string | undefined {
-  return edge.targetHandle ?? targetSpec.inputs[0]?.id;
+  return basePortId(edge.targetHandle) ?? targetSpec.inputs[0]?.id;
 }
 
 /** ¿`target` es alcanzable desde `start` siguiendo las aristas source->target? */
@@ -183,9 +193,8 @@ export function canConnect(conn: Connection, nodes: GraphNode[], edges: GraphEdg
   if (!source || !target) return false;
 
   const spec = NODE_SPECS[target.type];
-  const port = conn.targetHandle
-    ? spec.inputs.find((p) => p.id === conn.targetHandle)
-    : spec.inputs[0];
+  const portId = basePortId(conn.targetHandle);
+  const port = portId ? spec.inputs.find((p) => p.id === portId) : spec.inputs[0];
   if (!port) return false;
 
   // Compatibilidad de tipo (url↔url, text↔text).

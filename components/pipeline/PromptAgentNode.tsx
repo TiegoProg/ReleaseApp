@@ -1,6 +1,6 @@
 "use client";
 
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { type NodeProps } from "@xyflow/react";
 import { graphSnapshot, usePipelineStore, type PipelineNode } from "@/lib/pipelineStore";
 import { collectInputs, firstInputText } from "@/lib/pipelineGraph";
 import { NodeShell, RunButton } from "./NodeShell";
@@ -44,6 +44,7 @@ export function PromptAgentNode({ id, data, selected }: NodeProps<PipelineNode>)
 
   return (
     <NodeShell
+      kind="promptAgent"
       name={data.label}
       placeholder="Agente Prompt"
       onRename={(v) => updateNodeData(id, { label: v })}
@@ -53,8 +54,6 @@ export function PromptAgentNode({ id, data, selected }: NodeProps<PipelineNode>)
       status={status}
       selected={selected}
     >
-      <Handle type="target" position={Position.Top} className="!h-3 !w-3 !border-2 !border-white !bg-area-content" />
-
       <div className="flex items-center gap-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-mute">Salida</span>
         <div className="nodrag ml-auto flex gap-1">
@@ -99,8 +98,6 @@ export function PromptAgentNode({ id, data, selected }: NodeProps<PipelineNode>)
       )}
 
       {data.error && <p className="text-[10.5px] text-red-600">{data.error}</p>}
-
-      <Handle type="source" position={Position.Bottom} className="!h-3 !w-3 !border-2 !border-white !bg-area-content" />
     </NodeShell>
   );
 }

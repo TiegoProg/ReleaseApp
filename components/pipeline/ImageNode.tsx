@@ -1,6 +1,6 @@
 "use client";
 
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { type NodeProps } from "@xyflow/react";
 import { graphSnapshot, usePipelineStore, type PipelineNode } from "@/lib/pipelineStore";
 import { collectInputs, firstInputText } from "@/lib/pipelineGraph";
 import { NodeShell, RunButton } from "./NodeShell";
@@ -44,6 +44,7 @@ export function ImageNode({ id, data, selected }: NodeProps<PipelineNode>) {
 
   return (
     <NodeShell
+      kind="image"
       name={data.label}
       placeholder="Imagen"
       onRename={(v) => updateNodeData(id, { label: v })}
@@ -53,8 +54,6 @@ export function ImageNode({ id, data, selected }: NodeProps<PipelineNode>) {
       status={status}
       selected={selected}
     >
-      <Handle type="target" position={Position.Top} className="!h-3 !w-3 !border-2 !border-white !bg-area-media" />
-
       <div className="flex items-center gap-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-mute">Formato</span>
         <div className="nodrag ml-auto flex gap-1">
@@ -76,19 +75,17 @@ export function ImageNode({ id, data, selected }: NodeProps<PipelineNode>) {
       <RunButton onClick={run} running={status === "running"} label="Generar imagen" />
 
       {url ? (
-        <a href={url} target="_blank" rel="noreferrer" className="nodrag block">
+        <a href={url} target="_blank" rel="noreferrer" className="nodrag block min-h-0 flex-1">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={url} alt="resultado" className="w-full rounded-lg border border-line object-cover" />
+          <img src={url} alt="resultado" className="h-full w-full rounded-lg border border-line object-cover" />
         </a>
       ) : (
-        <div className="grid h-24 place-items-center rounded-lg border border-dashed border-line text-[11px] text-ink-mute">
+        <div className="grid min-h-[5rem] flex-1 place-items-center rounded-lg border border-dashed border-line text-[11px] text-ink-mute">
           sin imagen aún
         </div>
       )}
 
       {data.error && <p className="text-[10.5px] text-red-600">{data.error}</p>}
-
-      <Handle type="source" position={Position.Bottom} className="!h-3 !w-3 !border-2 !border-white !bg-area-media" />
     </NodeShell>
   );
 }

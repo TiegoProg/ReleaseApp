@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { type NodeProps } from "@xyflow/react";
 import { usePipelineStore, type PipelineNode } from "@/lib/pipelineStore";
 import { NodeShell } from "./NodeShell";
 
@@ -34,6 +34,7 @@ export function AssetNode({ id, data, selected }: NodeProps<PipelineNode>) {
 
   return (
     <NodeShell
+      kind="asset"
       name={data.label}
       placeholder="Asset"
       onRename={(v) => updateNodeData(id, { label: v })}
@@ -64,19 +65,17 @@ export function AssetNode({ id, data, selected }: NodeProps<PipelineNode>) {
       </button>
 
       {url ? (
-        <a href={url} target="_blank" rel="noreferrer" className="nodrag block">
+        <a href={url} target="_blank" rel="noreferrer" className="nodrag block min-h-0 flex-1">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={url} alt="asset" className="w-full rounded-lg border border-line object-cover" />
+          <img src={url} alt="asset" className="h-full w-full rounded-lg border border-line object-cover" />
         </a>
       ) : (
-        <div className="grid h-24 place-items-center rounded-lg border border-dashed border-line text-[11px] text-ink-mute">
+        <div className="grid min-h-[5rem] flex-1 place-items-center rounded-lg border border-dashed border-line text-[11px] text-ink-mute">
           arrastra o sube una imagen
         </div>
       )}
 
       {data.error && <p className="text-[10.5px] text-red-600">{data.error}</p>}
-
-      <Handle type="source" position={Position.Bottom} className="!h-3 !w-3 !border-2 !border-white !bg-amber-500" />
     </NodeShell>
   );
 }

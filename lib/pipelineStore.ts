@@ -12,6 +12,7 @@ import {
   type XYPosition,
 } from "@xyflow/react";
 import {
+  basePortId,
   canConnect,
   NODE_SPECS,
   reconcileImageOrder,
@@ -56,6 +57,7 @@ interface PipelineState {
   addNode: (type: NodeKind, position: XYPosition) => string;
   updateNodeData: (id: string, patch: Partial<PipelineNodeData>) => void;
   removeNode: (id: string) => void;
+  removeEdge: (id: string) => void;
   reset: () => void;
 }
 
@@ -76,10 +78,10 @@ function toGraphEdges(edges: Edge[]): GraphEdge[] {
   }));
 }
 
-// Ids de las imágenes conectadas al handle 'images' de un nodo Video.
+// Ids de las imágenes conectadas al puerto 'images' de un nodo Video (cualquier lado).
 function connectedImageSources(videoId: string, edges: Edge[]): string[] {
   return edges
-    .filter((e) => e.target === videoId && e.targetHandle === "images")
+    .filter((e) => e.target === videoId && basePortId(e.targetHandle) === "images")
     .map((e) => e.source);
 }
 
@@ -104,6 +106,15 @@ const DEFAULTS: Record<NodeKind, PipelineNodeData> = {
   image: { aspect: "9:16", status: "idle" },
   asset: { status: "idle" },
   video: { imageOrder: [], status: "idle" },
+};
+
+// Tamaño inicial por tipo (los nodos son redimensionables vía NodeResizer).
+const NODE_SIZE: Record<NodeKind, { width: number; height: number }> = {
+  project: { width: 280, height: 230 },
+  promptAgent: { width: 280, height: 260 },
+  image: { width: 280, height: 300 },
+  asset: { width: 260, height: 250 },
+  video: { width: 300, height: 420 },
 };
 
 // localStorage solo existe en el cliente; en SSR usamos un storage no-op.
@@ -153,6 +164,8 @@ export const usePipelineStore = create<PipelineState>()(
           id,
           type,
           position,
+          width: NODE_SIZE[type].width,
+          height: NODE_SIZE[type].height,
           data: { ...DEFAULTS[type] },
         };
         set({ nodes: [...get().nodes, node] });
@@ -171,6 +184,11 @@ export const usePipelineStore = create<PipelineState>()(
         set({ nodes: reconcileVideos(nodes, edges), edges });
       },
 
+      removeEdge: (id) => {
+        const edges = get().edges.filter((e) => e.id !== id);
+        set({ edges, nodes: reconcileVideos(get().nodes, edges) });
+      },
+
       reset: () => set({ nodes: [], edges: [] }),
     }),
     {
@@ -179,12 +197,19 @@ export const usePipelineStore = create<PipelineState>()(
         typeof window !== "undefined" ? window.localStorage : noopStorage
       ),
       partialize: (s) => ({ nodes: s.nodes, edges: s.edges }),
-      // Al rehidratar, ningún nodo debe quedar "corriendo" de una sesión previa.
+      // Al rehidratar: ningún nodo queda "corriendo" de una sesión previa y se
+      // rellena el tamaño si faltara (nodos creados antes del resize).
       onRehydrateStorage: () => (state) => {
         if (!state) return;
-        state.nodes = state.nodes.map((n) =>
-          n.data?.status === "running" ? { ...n, data: { ...n.data, status: "idle" } } : n
-        );
+        state.nodes = state.nodes.map((n) => {
+          const size = NODE_SIZE[(n.type as NodeKind) ?? "project"] ?? { width: 280, height: 240 };
+          return {
+            ...n,
+            width: n.width ?? size.width,
+            height: n.height ?? size.height,
+            data: n.data?.status === "running" ? { ...n.data, status: "idle" } : n.data,
+          };
+        });
       },
     }
   )

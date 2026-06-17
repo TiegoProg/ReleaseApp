@@ -98,6 +98,20 @@ describe("pipelineStore: nodo Video e imageOrder", () => {
     expect(vid.data.imageOrder).toEqual([i2]);
   });
 
+  it("removeEdge quita la arista y reconcilia imageOrder", () => {
+    const st = usePipelineStore.getState();
+    const i1 = st.addNode("image", { x: 0, y: 0 });
+    const v = st.addNode("video", { x: 0, y: 200 });
+    usePipelineStore.getState().onConnect(imgConn(i1, v));
+    const edge = usePipelineStore.getState().edges[0];
+
+    usePipelineStore.getState().removeEdge(edge.id);
+
+    expect(usePipelineStore.getState().edges).toHaveLength(0);
+    const vid = usePipelineStore.getState().nodes.find((n) => n.id === v)!;
+    expect(vid.data.imageOrder).toEqual([]);
+  });
+
   it("rechaza conectar texto al handle 'images' (tipo incompatible)", () => {
     const st = usePipelineStore.getState();
     const p = st.addNode("project", { x: 0, y: 0 });
