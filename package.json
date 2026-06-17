@@ -13,6 +13,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",
     "@supabase/supabase-js": "^2.108.0",
+    "@xyflow/react": "^12.11.0",
     "d3-force": "^3.0.0",
     "framer-motion": "^11.5.4",
     "next": "^14.2.35",

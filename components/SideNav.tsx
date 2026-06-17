@@ -4,11 +4,12 @@ import { Icon, type GlyphName } from "./Icon";
 import { useUiStore } from "@/lib/uiStore";
 import { BRAND, BRAND_TAGLINE } from "@/lib/areaMeta";
 
-export type NavView = "floor" | "studio" | "board" | "network";
+export type NavView = "floor" | "studio" | "pipeline" | "board" | "network";
 
 const ITEMS: { key: NavView; label: string; icon: GlyphName }[] = [
   { key: "floor", label: "Planta", icon: "home" },
   { key: "studio", label: "UGC Studio", icon: "studio" },
+  { key: "pipeline", label: "Pipeline", icon: "sparkle" },
   { key: "board", label: "Entregables", icon: "board" },
   { key: "network", label: "Red de agentes", icon: "network" },
 ];

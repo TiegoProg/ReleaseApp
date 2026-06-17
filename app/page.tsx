@@ -18,6 +18,8 @@ import type { AreaKey, ConfigStatus } from "@/lib/types";
 
 // El grafo usa canvas + window; cárgalo solo en cliente.
 const OrbitGraph = dynamic(() => import("@/components/OrbitGraph"), { ssr: false });
+// La pizarra (React Flow) usa window/localStorage; solo en cliente.
+const Pipeline = dynamic(() => import("@/components/Pipeline"), { ssr: false });
 
 const LS_KEY = "orbita_campaign";
 
@@ -145,6 +147,14 @@ export default function Home() {
           {view === "studio" && (
             <div className="scroll-thin h-full overflow-y-auto p-3 pb-24 md:p-4 lg:pb-4">
               <Studio />
+            </div>
+          )}
+
+          {view === "pipeline" && (
+            <div className="h-full p-3 pb-24 md:p-4 lg:pb-4">
+              <div className="floor-plate relative h-full overflow-hidden">
+                <Pipeline />
+              </div>
             </div>
           )}
 

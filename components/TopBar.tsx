@@ -9,6 +9,7 @@ import type { NavView } from "./SideNav";
 const VIEW_META: Record<NavView, { title: string; subtitle: string }> = {
   floor: { title: "Planta de la agencia", subtitle: "Entra a una sala para ver y dirigir a sus agentes" },
   studio: { title: "UGC Studio", subtitle: "Crea avatares consistentes y anímalos a video" },
+  pipeline: { title: "Pipeline", subtitle: "Encadena nodos para producir creatividades" },
   board: { title: "Entregables", subtitle: "Todo lo que las salas han publicado en el board" },
   network: { title: "Red de agentes", subtitle: "Topología viva de la orquestación" },
 };
